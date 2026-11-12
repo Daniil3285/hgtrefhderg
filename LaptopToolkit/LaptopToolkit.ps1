@@ -1,4 +1,4 @@
-﻿# LaptopToolkit v4.1 - Skytech Noir (Ryzen 7 8845HS / DDR5-5600 / RTX 4070 Laptop до 140 Вт)
+﻿# LaptopToolkit v4.2 - Skytech Noir (Ryzen 7 8845HS / DDR5-5600 / RTX 4070 Laptop до 140 Вт)
 # Файл должен быть в UTF-8 с BOM: иначе Windows PowerShell 5.1 ломает кириллицу.
 
 $isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole(
@@ -11,7 +11,7 @@ if (-not $isAdmin) {
 }
 
 $ProgressPreference = 'SilentlyContinue'
-$Version = '4.1'
+$Version = '4.2'
 
 # ---------------- нативные функции ----------------
 # Этот же код сохраняется в ProgramData и используется агентом автопереключения,
@@ -2572,6 +2572,10 @@ $script:BatMaster = Add-Row 'Экономия при работе от бата�
 $script:NowRow = Add-Row 'Сейчас' 'Отключите зарядку: через 2-3 секунды здесь появится «От батареи · 60 Гц · Лучшая энергоэффективность» - значит, всё работает.' -H 76
 $script:NowRow.State = 0
 
+$script:ChargeRow = Add-Row 'Зарядка' 'Подключайте разные порты Type-C, кабели и зарядки - строка обновляется сама за 2-3 секунды.' 'Не заряжается?' -H 76 -Click { Show-TypeCHelp }
+$script:ChargeRow.State = 0
+$script:ChargeRow.Value = 'проверяю...'
+
 Add-Section 'Главная причина расхода'
 [void](Add-Row 'Режим графики' '' 'Как переключить' -Load { param($r) Set-GraphicsRow $r } -Click { Show-HybridDialog })
 Add-ControlCenterRow 'В нём переключается режим графики: для батареи выберите гибридный (Hybrid / MSHybrid).'
@@ -2915,6 +2919,34 @@ $tileGpu.Add_Click({
 })
 
 $script:LastAC = $null
+# Строка «Зарядка»: видит ли Windows питание и идёт ли ток в батарею. Ватты - от драйвера батареи (root\wmi BatteryStatus).
+function Update-ChargeRow($ac, $bp, $bs) {
+    $r = $script:ChargeRow
+    if (-not $r) { return }
+    $in = if ($bs -and $bs.ChargeRate -gt 0) { [math]::Round($bs.ChargeRate / 1000, 1) } else { 0 }
+    $out = if ($bs -and $bs.DischargeRate -gt 0) { [math]::Round($bs.DischargeRate / 1000, 1) } else { 0 }
+    if ($ac -eq 1) {
+        if ($in -gt 0) { Set-Row $r 1 "заряжается: +$in Вт" 'Питание есть, ток идёт в батарею.' }
+        elseif ($out -gt 0) { Set-Row $r 3 "подключено, но разряжается: −$out Вт" 'Мощности зарядки не хватает: нужна PD-зарядка 100 Вт и кабель на 5 А. Нажмите «Не заряжается?».' }
+        elseif ($bp -ge 98) { Set-Row $r 1 "питание есть, батарея полная ($bp %)" 'Заряжать нечего - всё в порядке.' }
+        else { Set-Row $r 2 "питание есть, но НЕ заряжается ($bp %)" 'Чаще всего - лимит заряда в Control Center -> Battery Health. Нажмите «Не заряжается?».' }
+    } elseif ($ac -eq 0) {
+        Set-Row $r 0 'питания нет - от батареи' 'Если зарядка Type-C сейчас подключена, ноутбук её не принял: другой порт, кабель или зарядка мощнее. Нажмите «Не заряжается?».'
+    } else { Set-Row $r 5 'не определить' }
+}
+
+function Show-TypeCHelp {
+    $msg = "ЗАРЯДКА ЧЕРЕЗ TYPE-C - ПРОВЕРЬТЕ ПО ПОРЯДКУ`n`n" +
+        "1. Порт. Заряжает только один Type-C - обычно USB4/Thunderbolt (со значком молнии или батареи, чаще всего сзади). Попробуйте каждый Type-C порт.`n`n" +
+        "2. Зарядка и кабель. Нужна USB-C PD зарядка 100 Вт (20 В / 5 А) и кабель на 5 А (100 Вт). От зарядки телефона (20-45 Вт) и обычного кабеля на 3 А игровой ноутбук обычно не заряжается вообще.`n`n" +
+        "3. Лимит заряда. Control Center -> Battery -> Battery Health: если включён режим с ограничением (60 % / 80 %), а заряд уже выше - зарядка не пойдёт. Включите полный заряд (Full Capacity / 100 %).`n`n" +
+        "4. Родной блок питания (круглый штекер) - отключите его на время проверки.`n`n" +
+        "5. Нагрузка. 100 Вт по Type-C не хватает для игр и режима Turbo: проверяйте в простое, в режиме Office/Quiet.`n`n" +
+        "6. Не помогло - обновите BIOS/EC с сайта поддержки Skytech и проверьте зарядку на телефоне или другом ноутбуке.`n`n" +
+        "«Charging Priority» в Type-C Mode у вас выбран правильно.`n" +
+        "Строка «Зарядка» на этой странице показывает результат через 2-3 секунды после подключения.`n`nОткрыть Control Center?"
+    if (Ask-User $msg 'Зарядка через Type-C') { [void](Open-ControlCenter) }
+}
 function Update-State {
     $ac = [LTK.Pwr]::OnAC()
     $ov = [LTK.Pwr]::GetOverlay()
@@ -2961,23 +2993,24 @@ function Update-Monitor {
         $tileRam.Set("$pct %", "$used из $tot ГБ", $pct, $(if ($pct -ge 85) { $cWarn } else { $accent }))
     }
 
+    $bs = $null
+    if (-not $script:NoBatWmi) {
+        try { $bs = Get-CimInstance -Namespace root\wmi -ClassName BatteryStatus -ErrorAction Stop | Select-Object -First 1 } catch { $script:NoBatWmi = $true }
+    }
     if ([LTK.Pwr]::HasBattery()) {
         $bp = [LTK.Pwr]::BatteryPercent()
         $sub = 'от сети'
+        if ($ac -eq 1 -and $bs -and $bs.ChargeRate -gt 0) { $sub = "заряжается +$([math]::Round($bs.ChargeRate / 1000, 1)) Вт" }
         if ($ac -ne 1) {
             $parts = @()
             $sec = [LTK.Pwr]::BatterySeconds()
             if ($sec -gt 0) { $parts += "≈ $([int][math]::Floor($sec / 3600)) ч $([int](($sec % 3600) / 60)) мин" }
-            if (-not $script:NoBatWmi) {
-                try {
-                    $bs = Get-CimInstance -Namespace root\wmi -ClassName BatteryStatus -ErrorAction Stop | Select-Object -First 1
-                    if ($bs.DischargeRate -gt 0) { $parts += "расход $([math]::Round($bs.DischargeRate / 1000, 1)) Вт" }
-                } catch { $script:NoBatWmi = $true }
-            }
+            if ($bs -and $bs.DischargeRate -gt 0) { $parts += "расход $([math]::Round($bs.DischargeRate / 1000, 1)) Вт" }
             $sub = if ($parts.Count) { $parts -join '  ·  ' } else { 'от батареи' }
         }
         $col = if ($bp -lt 15) { $cErr } elseif ($bp -lt 30) { $cWarn } else { $cOk }
         $tileBat.Set($(if ($bp -ge 0) { "$bp %" } else { '?' }), $sub, $bp, $col)
+        Update-ChargeRow $ac $bp $bs
     } else { $tileBat.Set('нет', 'батарея не найдена', -1, $cDim) }
 
     if ($ac -eq 0 -and $script:GpuMon) {
