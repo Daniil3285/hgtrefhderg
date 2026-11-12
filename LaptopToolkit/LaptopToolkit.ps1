@@ -1,4 +1,4 @@
-﻿# LaptopToolkit v3 - Skytech Noir (Ryzen 7 8845HS / DDR5-5600 / RTX 4070 Laptop до 140 Вт)
+﻿# LaptopToolkit v3.1 - Skytech Noir (Ryzen 7 8845HS / DDR5-5600 / RTX 4070 Laptop до 140 Вт)
 # Файл должен быть в UTF-8 с BOM: иначе Windows PowerShell 5.1 ломает кириллицу.
 
 $isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole(
@@ -11,7 +11,7 @@ if (-not $isAdmin) {
 }
 
 $ProgressPreference = 'SilentlyContinue'
-$Version = '3.0'
+$Version = '3.1'
 
 # ---------------- нативные функции ----------------
 # Этот же код сохраняется в ProgramData и используется агентом автопереключения,
@@ -203,8 +203,10 @@ $smiCmd = Get-Command nvidia-smi -ErrorAction SilentlyContinue
 if ($smiCmd) { $Smi = $smiCmd.Source }
 elseif (Test-Path "$env:SystemRoot\System32\nvidia-smi.exe") { $Smi = "$env:SystemRoot\System32\nvidia-smi.exe" }
 
-$MaxMHz = (Get-CimInstance Win32_Processor | Select-Object -First 1).MaxClockSpeed
-$OsBuild = [int](Get-CimInstance Win32_OperatingSystem).BuildNumber
+$MaxMHz = 0
+try { $MaxMHz = (Get-CimInstance Win32_Processor -ErrorAction Stop | Select-Object -First 1).MaxClockSpeed } catch { }
+if (-not $MaxMHz) { $MaxMHz = (Get-ItemProperty "HKLM:\HARDWARE\DESCRIPTION\System\CentralProcessor\0" -ErrorAction SilentlyContinue).'~MHz' }
+$OsBuild = [int](Get-ItemProperty "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion" -ErrorAction SilentlyContinue).CurrentBuildNumber
 $script:Log = New-Object Text.StringBuilder
 $script:Busy = $false
 $script:BusyName = ''
@@ -239,82 +241,456 @@ $PW = @{
     Media = '9596fb26-9850-41fd-ac3e-f7c3c00afd4b'; VideoPlay = '34c7b99f-9a6d-4b3c-8dc7-b6693b78cef4'
 }
 
+# ---------------- окно: элементы интерфейса ----------------
+# Рисуемые элементы (карточки, плитки, навигация) - на C#: так они плавные и без мерцания.
+$UiSource = @'
+using System;
+using System.Drawing;
+using System.Drawing.Drawing2D;
+using System.Runtime.InteropServices;
+using System.Windows.Forms;
+
+namespace LTK.UI
+{
+    public static class Theme
+    {
+        public static float Scale = 1f;
+        public static int S(float v) { return (int)Math.Round(v * Scale); }
+        public static Color Bg       = Color.FromArgb(16, 18, 22);
+        public static Color Surface  = Color.FromArgb(25, 28, 34);
+        public static Color Surface2 = Color.FromArgb(35, 39, 47);
+        public static Color Border   = Color.FromArgb(45, 50, 60);
+        public static Color Accent   = Color.FromArgb(0, 200, 172);
+        public static Color Fore     = Color.FromArgb(232, 234, 237);
+        public static Color Dim      = Color.FromArgb(148, 155, 167);
+
+        public static Color Mix(Color a, Color b, float t)
+        {
+            return Color.FromArgb((int)(a.R + (b.R - a.R) * t), (int)(a.G + (b.G - a.G) * t), (int)(a.B + (b.B - a.B) * t));
+        }
+        public static GraphicsPath Round(RectangleF r, float rad)
+        {
+            GraphicsPath p = new GraphicsPath();
+            float d = Math.Min(rad * 2, Math.Min(r.Width, r.Height));
+            if (d <= 1) { p.AddRectangle(r); return p; }
+            p.AddArc(r.X, r.Y, d, d, 180, 90);
+            p.AddArc(r.Right - d, r.Y, d, d, 270, 90);
+            p.AddArc(r.Right - d, r.Bottom - d, d, d, 0, 90);
+            p.AddArc(r.X, r.Bottom - d, d, d, 90, 90);
+            p.CloseFigure();
+            return p;
+        }
+        public static void FillRound(Graphics g, RectangleF r, float rad, Color fill, Color line)
+        {
+            using (GraphicsPath p = Round(r, rad))
+            {
+                using (SolidBrush b = new SolidBrush(fill)) g.FillPath(b, p);
+                if (line != Color.Empty) using (Pen pen = new Pen(line, 1f)) g.DrawPath(pen, p);
+            }
+        }
+
+        [DllImport("dwmapi.dll")] static extern int DwmSetWindowAttribute(IntPtr h, int attr, ref int val, int size);
+        [DllImport("uxtheme.dll", CharSet = CharSet.Unicode)] static extern int SetWindowTheme(IntPtr h, string app, string id);
+
+        // Тёмный заголовок окна (Windows 10 20H1+) и его цвет (Windows 11).
+        public static void DarkTitle(IntPtr h, Color caption)
+        {
+            int on = 1;
+            try { if (DwmSetWindowAttribute(h, 20, ref on, 4) != 0) DwmSetWindowAttribute(h, 19, ref on, 4); } catch { }
+            try { int c = caption.R | (caption.G << 8) | (caption.B << 16); DwmSetWindowAttribute(h, 35, ref c, 4); } catch { }
+        }
+        // Тёмные полосы прокрутки у стандартных элементов.
+        public static void DarkScroll(Control c) { try { SetWindowTheme(c.Handle, "DarkMode_Explorer", null); } catch { } }
+    }
+
+    public class Smooth : Control
+    {
+        protected bool Hot, Pressed;
+        public Smooth()
+        {
+            SetStyle(ControlStyles.UserPaint | ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer |
+                     ControlStyles.ResizeRedraw | ControlStyles.SupportsTransparentBackColor, true);
+        }
+        protected override void OnMouseEnter(EventArgs e) { Hot = true; Invalidate(); base.OnMouseEnter(e); }
+        protected override void OnMouseLeave(EventArgs e) { Hot = false; Pressed = false; Invalidate(); base.OnMouseLeave(e); }
+        protected override void OnMouseDown(MouseEventArgs e) { Pressed = true; Invalidate(); base.OnMouseDown(e); }
+        protected override void OnMouseUp(MouseEventArgs e) { Pressed = false; Invalidate(); base.OnMouseUp(e); }
+        protected override void OnTextChanged(EventArgs e) { Invalidate(); base.OnTextChanged(e); }
+        protected Graphics Begin(PaintEventArgs e)
+        {
+            Graphics g = e.Graphics;
+            g.Clear(Parent != null ? Parent.BackColor : Theme.Bg);
+            g.SmoothingMode = SmoothingMode.AntiAlias;
+            g.PixelOffsetMode = PixelOffsetMode.HighQuality;
+            return g;
+        }
+        protected static void Draw(Graphics g, string s, Font f, Rectangle r, Color c, TextFormatFlags extra)
+        {
+            if (string.IsNullOrEmpty(s) || f == null || r.Width <= 0 || r.Height <= 0) return;
+            TextRenderer.DrawText(g, s, f, r, c, TextFormatFlags.NoPrefix | TextFormatFlags.NoPadding | extra);
+        }
+    }
+
+    // Карточка действия: значок, заголовок, описание.
+    public class Card : Smooth
+    {
+        public string Title = "", Desc = "", Glyph = "";
+        public bool Primary;
+        public Font TitleFont, DescFont, GlyphFont;
+        public Card() { Cursor = Cursors.Hand; }
+        protected override void OnPaint(PaintEventArgs e)
+        {
+            Graphics g = Begin(e);
+            Color back = Primary ? Theme.Mix(Theme.Surface, Theme.Accent, 0.10f) : Theme.Surface;
+            if (Hot) back = Theme.Mix(back, Theme.Accent, 0.08f);
+            if (Pressed) back = Theme.Mix(back, Theme.Accent, 0.18f);
+            Color line = Hot ? Theme.Accent : (Primary ? Theme.Mix(Theme.Border, Theme.Accent, 0.55f) : Theme.Border);
+            Theme.FillRound(g, new RectangleF(0.5f, 0.5f, Width - 1.5f, Height - 1.5f), Theme.S(10), back, line);
+
+            int pad = Theme.S(14), ic = Theme.S(40);
+            Rectangle icr = new Rectangle(pad, pad, ic, ic);
+            Theme.FillRound(g, icr, Theme.S(10), Primary ? Theme.Accent : Theme.Mix(Theme.Surface2, Theme.Accent, 0.16f), Color.Empty);
+            Draw(g, Glyph, GlyphFont, icr, Primary ? Theme.Bg : Theme.Accent,
+                 TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.SingleLine);
+
+            int tx = pad + ic + Theme.S(12), tw = Width - tx - pad;
+            int th = TitleFont != null ? TitleFont.Height : Theme.S(20);
+            Rectangle tr = new Rectangle(tx, pad, tw, th);
+            Draw(g, Title, TitleFont, tr, Theme.Fore, TextFormatFlags.SingleLine | TextFormatFlags.EndEllipsis);
+            Rectangle dr = new Rectangle(tx, tr.Bottom + Theme.S(3), tw, Height - tr.Bottom - Theme.S(3) - Theme.S(10));
+            Draw(g, Desc, DescFont, dr, Theme.Dim, TextFormatFlags.WordBreak | TextFormatFlags.EndEllipsis | TextFormatFlags.TextBoxControl);
+        }
+    }
+
+    // Плитка монитора: заголовок, крупное значение, подпись, полоска.
+    public class Tile : Smooth
+    {
+        public string Title = "", Value = "-", Sub = "";
+        public float Percent = -1;
+        public Color Bar = Theme.Accent;
+        public bool Clickable;
+        public Font TitleFont, ValueFont, SubFont;
+        public void Set(string value, string sub, float percent, Color bar)
+        {
+            if (value == Value && sub == Sub && percent == Percent && bar == Bar) return;
+            Value = value; Sub = sub; Percent = percent; Bar = bar; Invalidate();
+        }
+        protected override void OnPaint(PaintEventArgs e)
+        {
+            Graphics g = Begin(e);
+            Color line = (Clickable && Hot) ? Theme.Accent : Theme.Border;
+            Theme.FillRound(g, new RectangleF(0.5f, 0.5f, Width - 1.5f, Height - 1.5f), Theme.S(10), Theme.Surface, line);
+            int pad = Theme.S(14), w = Width - pad * 2, y = Theme.S(11);
+            using (SolidBrush b = new SolidBrush(Bar)) g.FillEllipse(b, pad, y + Theme.S(5), Theme.S(7), Theme.S(7));
+            int th = TitleFont != null ? TitleFont.Height : Theme.S(16);
+            Draw(g, Title, TitleFont, new Rectangle(pad + Theme.S(13), y, w - Theme.S(13), th), Theme.Dim, TextFormatFlags.SingleLine | TextFormatFlags.EndEllipsis);
+            y += th + Theme.S(2);
+            int vh = ValueFont != null ? ValueFont.Height : Theme.S(30);
+            Draw(g, Value, ValueFont, new Rectangle(pad, y, w, vh), Theme.Fore, TextFormatFlags.SingleLine | TextFormatFlags.EndEllipsis);
+            y += vh;
+            int sh = SubFont != null ? SubFont.Height : Theme.S(16);
+            Draw(g, Sub, SubFont, new Rectangle(pad, y, w, sh), Theme.Dim, TextFormatFlags.SingleLine | TextFormatFlags.EndEllipsis);
+            if (Percent >= 0)
+            {
+                float bh = Theme.S(4), by = Height - pad + Theme.S(2) - bh;
+                Theme.FillRound(g, new RectangleF(pad, by, w, bh), bh / 2, Theme.Surface2, Color.Empty);
+                float fw = Math.Max(bh, w * Math.Min(100f, Percent) / 100f);
+                Theme.FillRound(g, new RectangleF(pad, by, fw, bh), bh / 2, Bar, Color.Empty);
+            }
+        }
+    }
+
+    // Пункт навигации слева.
+    public class NavItem : Smooth
+    {
+        public string Glyph = "";
+        public bool Selected;
+        public Font GlyphFont;
+        public NavItem() { Cursor = Cursors.Hand; }
+        protected override void OnPaint(PaintEventArgs e)
+        {
+            Graphics g = Begin(e);
+            if (Selected || Hot)
+            {
+                Color f = Selected ? Theme.Mix(Theme.Surface2, Theme.Accent, 0.14f) : Theme.Surface2;
+                Theme.FillRound(g, new RectangleF(0, 0, Width - 1, Height - 1), Theme.S(8), f, Color.Empty);
+            }
+            if (Selected)
+                Theme.FillRound(g, new RectangleF(Theme.S(3), Height * 0.28f, Theme.S(3), Height * 0.44f), Theme.S(2), Theme.Accent, Color.Empty);
+            Rectangle gr = new Rectangle(Theme.S(12), 0, Theme.S(26), Height);
+            Draw(g, Glyph, GlyphFont, gr, Selected ? Theme.Accent : Theme.Dim,
+                 TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.SingleLine);
+            Rectangle tr = new Rectangle(Theme.S(46), 0, Width - Theme.S(52), Height);
+            Draw(g, base.Text, Font, tr, Selected ? Theme.Fore : Theme.Mix(Theme.Dim, Theme.Fore, 0.35f),
+                 TextFormatFlags.VerticalCenter | TextFormatFlags.SingleLine | TextFormatFlags.EndEllipsis);
+        }
+    }
+
+    // Значок-«таблетка» с цветной точкой (питание, режим).
+    public class Badge : Smooth
+    {
+        public Color Tone = Theme.Accent;
+        public void Set(string text, Color tone)
+        {
+            if (text == base.Text && tone == Tone) return;
+            Tone = tone; base.Text = text; Invalidate();
+        }
+        protected override void OnPaint(PaintEventArgs e)
+        {
+            Graphics g = Begin(e);
+            Color pb = Parent != null ? Parent.BackColor : Theme.Bg;
+            Theme.FillRound(g, new RectangleF(0.5f, 0.5f, Width - 1.5f, Height - 1.5f), (Height - 1) / 2f,
+                            Theme.Mix(pb, Tone, 0.14f), Theme.Mix(pb, Tone, 0.45f));
+            int d = Theme.S(8), x = Theme.S(12);
+            using (SolidBrush b = new SolidBrush(Tone)) g.FillEllipse(b, x, (Height - d) / 2f, d, d);
+            Draw(g, base.Text, Font, new Rectangle(x + d + Theme.S(8), 0, Width - x - d - Theme.S(16), Height), Theme.Mix(Tone, Theme.Fore, 0.45f),
+                 TextFormatFlags.VerticalCenter | TextFormatFlags.SingleLine | TextFormatFlags.EndEllipsis);
+        }
+    }
+
+    // Небольшая кнопка; умеет быть кнопкой «ОК/Отмена» в диалогах.
+    public class Chip : Smooth, IButtonControl
+    {
+        public bool Primary;
+        private DialogResult result = DialogResult.None;
+        public DialogResult DialogResult { get { return result; } set { result = value; } }
+        public void NotifyDefault(bool value) { }
+        public void PerformClick() { OnClick(EventArgs.Empty); }
+        public Chip() { Cursor = Cursors.Hand; }
+        protected override void OnClick(EventArgs e)
+        {
+            base.OnClick(e);
+            Form f = FindForm();
+            if (f != null && result != DialogResult.None) f.DialogResult = result;
+        }
+        protected override void OnPaint(PaintEventArgs e)
+        {
+            Graphics g = Begin(e);
+            Color pb = Parent != null ? Parent.BackColor : Theme.Bg;
+            Color fill = Primary ? Theme.Accent : Theme.Mix(pb, Theme.Fore, 0.06f);
+            if (Hot) fill = Primary ? Theme.Mix(Theme.Accent, Color.White, 0.15f) : Theme.Mix(pb, Theme.Fore, 0.12f);
+            if (Pressed) fill = Primary ? Theme.Mix(Theme.Accent, Color.Black, 0.15f) : Theme.Mix(pb, Theme.Accent, 0.25f);
+            Theme.FillRound(g, new RectangleF(0.5f, 0.5f, Width - 1.5f, Height - 1.5f), Theme.S(7), fill,
+                            Primary ? Color.Empty : Theme.Mix(pb, Theme.Fore, 0.14f));
+            Draw(g, base.Text, Font, ClientRectangle, Primary ? Theme.Bg : Theme.Fore,
+                 TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.SingleLine);
+        }
+    }
+
+    // Панель со скруглёнными углами (подложка журнала).
+    public class RoundPanel : Panel
+    {
+        public Color Fill = Theme.Surface, Line = Theme.Border;
+        public RoundPanel()
+        {
+            SetStyle(ControlStyles.UserPaint | ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer | ControlStyles.ResizeRedraw, true);
+        }
+        protected override void OnPaint(PaintEventArgs e)
+        {
+            Graphics g = e.Graphics;
+            g.Clear(Parent != null ? Parent.BackColor : Theme.Bg);
+            g.SmoothingMode = SmoothingMode.AntiAlias;
+            Theme.FillRound(g, new RectangleF(0.5f, 0.5f, Width - 1.5f, Height - 1.5f), Theme.S(10), Fill, Line);
+        }
+    }
+}
+'@
+$uiRefs = @('System.Windows.Forms', 'System.Drawing')
+if ($PSVersionTable.PSEdition -eq 'Core') {
+    # PowerShell 7 (не основной сценарий): ссылки на уже загруженные сборки WinForms.
+    $uiRefs = @([AppDomain]::CurrentDomain.GetAssemblies() | Where-Object {
+        -not $_.IsDynamic -and $_.Location -and $_.GetName().Name -match '^(System\.(Windows\.Forms|Drawing|ComponentModel|Runtime|Collections|Private\.Windows)|Microsoft\.Win32\.Primitives|netstandard)' } |
+        ForEach-Object Location)
+}
+Add-Type -TypeDefinition $UiSource -ReferencedAssemblies $uiRefs -IgnoreWarnings
+
 # ---------------- окно ----------------
 $g0 = [Drawing.Graphics]::FromHwnd([IntPtr]::Zero)
 $script:Scale = [math]::Max(1.0, $g0.DpiX / 96.0)
 $g0.Dispose()
+[LTK.UI.Theme]::Scale = $script:Scale
 function Px([double]$n) { [int][math]::Round($n * $script:Scale) }
 function Sz([double]$w, [double]$h) { New-Object Drawing.Size((Px $w), (Px $h)) }
 function Pad([double]$l, [double]$t, [double]$r, [double]$b) { New-Object Windows.Forms.Padding((Px $l), (Px $t), (Px $r), (Px $b)) }
 
-$bg      = [Drawing.Color]::FromArgb(24, 26, 31)
-$panel   = [Drawing.Color]::FromArgb(34, 37, 44)
-$panel2  = [Drawing.Color]::FromArgb(46, 50, 59)
-$accent  = [Drawing.Color]::FromArgb(0, 170, 150)
-$accentD = [Drawing.Color]::FromArgb(0, 120, 106)
-$fg      = [Drawing.Color]::FromArgb(230, 230, 230)
-$cDim    = [Drawing.Color]::FromArgb(150, 156, 168)
-$cOk     = [Drawing.Color]::FromArgb(95, 205, 125)
-$cWarn   = [Drawing.Color]::FromArgb(240, 175, 60)
-$cErr    = [Drawing.Color]::FromArgb(240, 95, 95)
+$bg      = [LTK.UI.Theme]::Bg
+$panel   = [LTK.UI.Theme]::Surface
+$panel2  = [LTK.UI.Theme]::Surface2
+$accent  = [LTK.UI.Theme]::Accent
+$fg      = [LTK.UI.Theme]::Fore
+$cDim    = [LTK.UI.Theme]::Dim
+$cOk     = [Drawing.Color]::FromArgb(92, 210, 130)
+$cWarn   = [Drawing.Color]::FromArgb(245, 180, 65)
+$cErr    = [Drawing.Color]::FromArgb(245, 100, 100)
+
+$fontNames = @((New-Object Drawing.Text.InstalledFontCollection).Families | ForEach-Object Name)
+$semi = if ($fontNames -contains 'Segoe UI Semibold') { 'Segoe UI Semibold' } else { 'Segoe UI' }
+$HasIcons = $fontNames -contains 'Segoe MDL2 Assets'
+function New-Font([string]$name, [double]$size, [Drawing.FontStyle]$style = 'Regular') { New-Object Drawing.Font($name, [single]$size, $style) }
+$fUi      = New-Font 'Segoe UI' 9.5
+$fSmall   = New-Font 'Segoe UI' 8.5
+$fSemi    = New-Font $semi 10
+$fTitle   = New-Font $semi 15
+$fPage    = New-Font $semi 17
+$fValue   = New-Font $semi 17
+$fTileCap = New-Font $semi 8
+$fMono    = New-Font 'Consolas' 10
+$fIcon    = if ($HasIcons) { New-Font 'Segoe MDL2 Assets' 14 } else { New-Font 'Segoe UI' 13 }
+$fIconNav = if ($HasIcons) { New-Font 'Segoe MDL2 Assets' 12 } else { New-Font 'Segoe UI' 11 }
+
+# Значки разделов: Segoe MDL2 Assets (есть в Windows 10/11), запасной вариант - обычные символы.
+$Icons = @{
+    home = 0xE80F, '⌂'; diag = 0xE9D9, '✚'; gpu = 0xE7FC, '▣'; battery = 0xE83F, '▮'; windows = 0xE713, '⚙'
+    security = 0xEA18, '◈'; tests = 0xEC4A, '◷'; oc = 0xE945, '⚡'; install = 0xE7F8, '▭'; report = 0xE8A5, '☰'
+}
+function Ico([string]$key) {
+    $i = $Icons[$key]
+    if ($HasIcons) { [string][char]$i[0] } else { $i[1] }
+}
 
 $form = New-Object Windows.Forms.Form
-$form.Text = "Laptop Toolkit v$Version - Skytech Noir (R7 8845HS / RTX 4070)"
+$form.Text = "Laptop Toolkit v$Version - Skytech Noir"
 $form.AutoScaleMode = 'None'
-$form.Size = Sz 1220 820
-$form.MinimumSize = Sz 940 600
+$form.Size = Sz 1280 860
+$form.MinimumSize = Sz 1000 680
 $form.StartPosition = 'CenterScreen'
 $form.BackColor = $bg
 $form.ForeColor = $fg
-$form.Font = New-Object Drawing.Font('Segoe UI', 9)
+$form.Font = $fUi
+$form.Add_HandleCreated({ [LTK.UI.Theme]::DarkTitle($form.Handle, $panel) })
 
 $tips = New-Object Windows.Forms.ToolTip
-$tips.AutoPopDelay = 20000; $tips.InitialDelay = 400
+$tips.AutoPopDelay = 20000; $tips.InitialDelay = 500
 
-$left = New-Object Windows.Forms.FlowLayoutPanel
-$left.Dock = 'Left'; $left.Width = Px 290; $left.BackColor = $panel
-$left.FlowDirection = 'TopDown'; $left.WrapContents = $false; $left.AutoScroll = $true
-$left.Padding = Pad 10 6 6 10
+# --- шапка ---
+$header = New-Object Windows.Forms.Panel
+$header.Dock = 'Top'; $header.Height = Px 68; $header.BackColor = $panel
+$logo = New-Object Windows.Forms.Label
+$logo.Text = Ico 'oc'; $logo.Font = $(if ($HasIcons) { New-Font 'Segoe MDL2 Assets' 20 } else { New-Font 'Segoe UI' 20 })
+$logo.ForeColor = $accent; $logo.TextAlign = 'MiddleCenter'
+$logo.Location = New-Object Drawing.Point((Px 18), (Px 14)); $logo.Size = Sz 40 40
+$appTitle = New-Object Windows.Forms.Label
+$appTitle.Text = 'Laptop Toolkit'; $appTitle.Font = $fTitle; $appTitle.ForeColor = $fg; $appTitle.AutoSize = $true
+$appTitle.Location = New-Object Drawing.Point((Px 64), (Px 10))
+$appSub = New-Object Windows.Forms.Label
+$appSub.Text = "Skytech Noir  ·  Ryzen 7 8845HS  ·  RTX 4070 Laptop 140 Вт  ·  v$Version"
+$appSub.Font = $fSmall; $appSub.ForeColor = $cDim; $appSub.AutoSize = $true
+$appSub.Location = New-Object Drawing.Point((Px 66), (Px 40))
+$badges = New-Object Windows.Forms.FlowLayoutPanel
+$badges.Dock = 'Right'; $badges.Width = Px 560; $badges.FlowDirection = 'RightToLeft'; $badges.WrapContents = $false
+$badges.Padding = Pad 0 19 14 0; $badges.BackColor = $panel
+$badgePower = New-Object LTK.UI.Badge
+$badgePower.Size = Sz 150 30; $badgePower.Font = $fSmall; $badgePower.Margin = Pad 8 0 0 0
+$badgeMode = New-Object LTK.UI.Badge
+$badgeMode.Size = Sz 300 30; $badgeMode.Font = $fSmall; $badgeMode.Margin = Pad 8 0 0 0
+$badges.Controls.AddRange(@($badgePower, $badgeMode))
+$header.Controls.AddRange(@($logo, $appTitle, $appSub, $badges))
 
-$top = New-Object Windows.Forms.Panel
-$top.Dock = 'Top'; $top.Height = Px 62; $top.BackColor = $panel
+# --- навигация ---
+$nav = New-Object Windows.Forms.Panel
+$nav.Dock = 'Left'; $nav.Width = Px 236; $nav.BackColor = $panel
+$navFlow = New-Object Windows.Forms.FlowLayoutPanel
+$navFlow.Dock = 'Fill'; $navFlow.FlowDirection = 'TopDown'; $navFlow.WrapContents = $false; $navFlow.AutoScroll = $true
+$navFlow.Padding = Pad 12 10 8 10; $navFlow.BackColor = $panel
+$navHint = New-Object Windows.Forms.Label
+$navHint.Dock = 'Bottom'; $navHint.Height = Px 62; $navHint.Padding = Pad 18 0 12 12
+$navHint.ForeColor = $cDim; $navHint.Font = $fSmall; $navHint.TextAlign = 'BottomLeft'
+$navHint.Text = "Все изменения запоминаются`nи откатываются одной кнопкой."
+$nav.Controls.Add($navFlow); $nav.Controls.Add($navHint)
 
-$mon = New-Object Windows.Forms.Label
-$mon.Dock = 'Fill'
-$mon.Font = New-Object Drawing.Font('Consolas', 10)
-$mon.Padding = Pad 10 8 0 0
-$mon.Text = 'Монитор запускается...'
-
-$chkGpu = New-Object Windows.Forms.CheckBox
-$chkGpu.Dock = 'Right'; $chkGpu.Width = Px 340
-$chkGpu.Text = 'GPU в мониторе (будит видеокарту - только от сети)'
-$chkGpu.ForeColor = $fg
-$tips.SetToolTip($chkGpu, 'Опрос nvidia-smi не даёт RTX 4070 уснуть. На батарее галочка снимается автоматически.')
-
-$top.Controls.Add($mon)
-$top.Controls.Add($chkGpu)
-
+# --- строка состояния ---
 $bottom = New-Object Windows.Forms.Panel
-$bottom.Dock = 'Bottom'; $bottom.Height = Px 26; $bottom.BackColor = $panel
+$bottom.Dock = 'Bottom'; $bottom.Height = Px 28; $bottom.BackColor = $panel
 $statusLbl = New-Object Windows.Forms.Label
-$statusLbl.Dock = 'Left'; $statusLbl.Width = Px 380; $statusLbl.TextAlign = 'MiddleLeft'
-$statusLbl.Padding = Pad 10 0 0 0; $statusLbl.ForeColor = $cDim; $statusLbl.Text = 'Готово.'
+$statusLbl.Dock = 'Left'; $statusLbl.Width = Px 460; $statusLbl.TextAlign = 'MiddleLeft'; $statusLbl.Font = $fSmall
+$statusLbl.Padding = Pad 14 0 0 0; $statusLbl.ForeColor = $cDim; $statusLbl.Text = 'Готово.'; $statusLbl.AutoEllipsis = $true
 $stateLbl = New-Object Windows.Forms.Label
-$stateLbl.Dock = 'Fill'; $stateLbl.TextAlign = 'MiddleRight'
-$stateLbl.Padding = Pad 0 0 10 0; $stateLbl.ForeColor = $cDim
+$stateLbl.Dock = 'Fill'; $stateLbl.TextAlign = 'MiddleRight'; $stateLbl.Font = $fSmall
+$stateLbl.Padding = Pad 0 0 14 0; $stateLbl.ForeColor = $cDim; $stateLbl.AutoEllipsis = $true
 $bottom.Controls.Add($stateLbl)
 $bottom.Controls.Add($statusLbl)
 
+# --- основная область ---
+$main = New-Object Windows.Forms.Panel
+$main.Dock = 'Fill'; $main.BackColor = $bg; $main.Padding = Pad 20 16 20 16
+
+$tiles = New-Object Windows.Forms.TableLayoutPanel
+$tiles.Dock = 'Top'; $tiles.Height = Px 112; $tiles.ColumnCount = 4; $tiles.RowCount = 1; $tiles.BackColor = $bg
+$tiles.Margin = Pad 0 0 0 0; $tiles.Padding = Pad 0 0 0 0
+for ($i = 0; $i -lt 4; $i++) { [void]$tiles.ColumnStyles.Add((New-Object Windows.Forms.ColumnStyle('Percent', 25))) }
+[void]$tiles.RowStyles.Add((New-Object Windows.Forms.RowStyle('Percent', 100)))
+function New-Tile([string]$title, [int]$col) {
+    $t = New-Object LTK.UI.Tile
+    $t.Title = $title; $t.Dock = 'Fill'
+    $t.Margin = New-Object Windows.Forms.Padding($(if ($col -eq 0) { 0 } else { Px 6 }), 0, $(if ($col -eq 3) { 0 } else { Px 6 }), 0)
+    $t.TitleFont = $fTileCap; $t.ValueFont = $fValue; $t.SubFont = $fSmall
+    $tiles.Controls.Add($t, $col, 0)
+    $t
+}
+$tileCpu = New-Tile 'ПРОЦЕССОР' 0
+$tileRam = New-Tile 'ПАМЯТЬ' 1
+$tileBat = New-Tile 'БАТАРЕЯ' 2
+$tileGpu = New-Tile 'ВИДЕОКАРТА' 3
+$tileGpu.Clickable = $true; $tileGpu.Cursor = [Windows.Forms.Cursors]::Hand
+$tips.SetToolTip($tileGpu, 'Нажмите, чтобы включить/выключить слежение за RTX 4070. Опрос будит видеокарту - на батарее выключается сам.')
+
+$pageHead = New-Object Windows.Forms.Panel
+$pageHead.Dock = 'Top'; $pageHead.Height = Px 74; $pageHead.BackColor = $bg
+$pageTitle = New-Object Windows.Forms.Label
+$pageTitle.Font = $fPage; $pageTitle.ForeColor = $fg; $pageTitle.AutoSize = $true
+$pageTitle.Location = New-Object Drawing.Point(0, (Px 16))
+$pageDesc = New-Object Windows.Forms.Label
+$pageDesc.Font = $fUi; $pageDesc.ForeColor = $cDim; $pageDesc.AutoSize = $true
+$pageDesc.Location = New-Object Drawing.Point((Px 2), (Px 48))
+$pageHead.Controls.AddRange(@($pageTitle, $pageDesc))
+
+$cards = New-Object Windows.Forms.FlowLayoutPanel
+$cards.Dock = 'Top'; $cards.Height = Px 100; $cards.BackColor = $bg
+$cards.WrapContents = $true; $cards.Margin = Pad 0 0 0 0; $cards.Padding = Pad 0 0 0 0
+
+$logCard = New-Object LTK.UI.RoundPanel
+$logCard.Dock = 'Fill'; $logCard.Padding = Pad 16 8 6 10
+$logHead = New-Object Windows.Forms.Panel
+$logHead.Dock = 'Top'; $logHead.Height = Px 38; $logHead.BackColor = $panel
+$logTitle = New-Object Windows.Forms.Label
+$logTitle.Text = 'Журнал'; $logTitle.Font = $fSemi; $logTitle.ForeColor = $fg; $logTitle.AutoSize = $true
+$logTitle.Location = New-Object Drawing.Point(0, (Px 8))
+$logTools = New-Object Windows.Forms.FlowLayoutPanel
+$logTools.Dock = 'Right'; $logTools.Width = Px 420; $logTools.FlowDirection = 'RightToLeft'; $logTools.WrapContents = $false
+$logTools.BackColor = $panel; $logTools.Padding = Pad 0 3 8 0
+function New-Chip([string]$text, [double]$w, [switch]$Primary) {
+    $c = New-Object LTK.UI.Chip
+    $c.Text = $text; $c.Size = Sz $w 30; $c.Font = $fSmall; $c.Primary = [bool]$Primary; $c.Margin = Pad 6 0 0 0
+    $c
+}
+$chipClear = New-Chip 'Очистить' 96
+$chipFolder = New-Chip 'Папка отчётов' 124
+$chipSave = New-Chip 'Сохранить отчёт' 140
+$logTools.Controls.AddRange(@($chipClear, $chipFolder, $chipSave))
+$logHead.Controls.AddRange(@($logTitle, $logTools))
+
 $box = New-Object Windows.Forms.RichTextBox
 $box.ReadOnly = $true; $box.ScrollBars = 'Vertical'; $box.DetectUrls = $false
-$box.Dock = 'Fill'; $box.BackColor = $bg; $box.ForeColor = $fg
-$box.Font = New-Object Drawing.Font('Consolas', 10)
+$box.Dock = 'Fill'; $box.BackColor = $panel; $box.ForeColor = $fg
+$box.Font = $fMono
 $box.BorderStyle = 'None'
+$logCard.Controls.Add($box)
+$logCard.Controls.Add($logHead)
 
-$form.Controls.Add($box)
-$form.Controls.Add($top)
+$gap1 = New-Object Windows.Forms.Panel
+$gap1.Dock = 'Top'; $gap1.Height = Px 6; $gap1.BackColor = $bg
+
+# порядок добавления важен для Dock: последний добавленный прижимается первым
+$main.Controls.Add($logCard)
+$main.Controls.Add($gap1)
+$main.Controls.Add($cards)
+$main.Controls.Add($pageHead)
+$main.Controls.Add($tiles)
+
+$form.Controls.Add($main)
+$form.Controls.Add($nav)
 $form.Controls.Add($bottom)
-$form.Controls.Add($left)
+$form.Controls.Add($header)
 
 # ---------------- помощники ----------------
 function Out-Box([object[]]$Lines, $Color = $null) {
@@ -336,7 +712,7 @@ function Out-Box([object[]]$Lines, $Color = $null) {
     $box.ScrollToCaret()
     [Windows.Forms.Application]::DoEvents()
 }
-function Head([string]$t) { Out-Box @('', "=============== $t ===============") $accent }
+function Head([string]$t) { Out-Box @('', "■ $t") $accent }
 function Out-Ok([object[]]$Lines)   { Out-Box $Lines $cOk }
 function Out-Warn([object[]]$Lines) { Out-Box $Lines $cWarn }
 function Out-Dim([object[]]$Lines)  { Out-Box $Lines $cDim }
@@ -349,44 +725,17 @@ function Ask-User([string]$msg, [string]$title = 'Подтверждение') {
 function Invoke-Safe([string]$name, [scriptblock]$action) {
     if ($script:Busy) { $statusLbl.Text = "Подождите: ещё выполняется «$($script:BusyName)»"; return }
     $script:Busy = $true; $script:BusyName = $name
-    $statusLbl.Text = "Выполняется: $name..."
+    $statusLbl.ForeColor = $accent
+    $statusLbl.Text = "● Выполняется: $name..."
     $form.Cursor = [Windows.Forms.Cursors]::WaitCursor
     try { & $action }
     catch { Out-Box "ОШИБКА [$name]: $($_.Exception.Message)" }
     finally {
         $script:Busy = $false; $script:Cat = $null
         $form.Cursor = [Windows.Forms.Cursors]::Default
+        $statusLbl.ForeColor = $cDim
         $statusLbl.Text = "Готово: $name"
     }
-}
-
-function Add-Section([string]$text) {
-    $l = New-Object Windows.Forms.Label
-    $l.Text = $text; $l.ForeColor = $accent
-    $l.Font = New-Object Drawing.Font('Segoe UI', 9, [Drawing.FontStyle]::Bold)
-    $l.Width = Px 250; $l.Height = Px 28; $l.TextAlign = 'BottomLeft'
-    $left.Controls.Add($l)
-}
-
-function Add-Btn([string]$text, [scriptblock]$action, [string]$tip = '', [switch]$Primary) {
-    $b = New-Object Windows.Forms.Button
-    $b.Text = $text; $b.Width = Px 250; $b.Height = Px 34
-    $b.FlatStyle = 'Flat'; $b.FlatAppearance.BorderColor = $accent
-    $b.TextAlign = 'MiddleLeft'; $b.Padding = Pad 6 0 0 0
-    if ($Primary) {
-        $b.BackColor = $accentD; $b.ForeColor = [Drawing.Color]::White
-        $b.Font = New-Object Drawing.Font('Segoe UI', 9, [Drawing.FontStyle]::Bold)
-        $b.FlatAppearance.MouseOverBackColor = $accent
-    } else {
-        $b.BackColor = $panel; $b.ForeColor = $fg
-        $b.FlatAppearance.MouseOverBackColor = $panel2
-    }
-    $b.FlatAppearance.MouseDownBackColor = $accent
-    $b.Margin = Pad 0 0 0 4
-    $b.Tag = @{ Name = $text; Action = $action }
-    $b.Add_Click({ param($s, $e) Invoke-Safe $s.Tag.Name $s.Tag.Action })
-    if ($tip) { $tips.SetToolTip($b, $tip) }
-    $left.Controls.Add($b)
 }
 
 # Долгие команды идут в отдельном окне (права администратора наследуются).
@@ -541,7 +890,9 @@ function Get-AgentConfig {
     if (-not (Test-Path $p)) { return $null }
     try { return (Get-Content $p -Raw -Encoding UTF8 | ConvertFrom-Json) } catch { return $null }
 }
-function Test-AgentTask { [bool](Get-ScheduledTask -TaskName 'PowerAgent' -TaskPath '\LaptopToolkit\' -ErrorAction SilentlyContinue) }
+function Test-AgentTask {
+    try { return [bool](Get-ScheduledTask -TaskName 'PowerAgent' -TaskPath '\LaptopToolkit\' -ErrorAction Stop) } catch { return $false }
+}
 
 function Install-Agent([hashtable]$changes) {
     $cfg = @{ AcOverlay = ''; DcOverlay = ''; Refresh = $false; DcHz = 60 }
@@ -621,18 +972,25 @@ function Uninstall-Agent {
 function Show-Options([string]$title, [string]$intro, [object[]]$items, [string]$okText = 'Применить') {
     $dlg = New-Object Windows.Forms.Form
     $dlg.Text = $title; $dlg.StartPosition = 'CenterParent'; $dlg.AutoScaleMode = 'None'
-    $dlg.Size = Sz 720 760; $dlg.MinimumSize = Sz 540 420
+    $dlg.Size = Sz 760 780; $dlg.MinimumSize = Sz 560 440
     $dlg.BackColor = $bg; $dlg.ForeColor = $fg; $dlg.ShowInTaskbar = $false; $dlg.MinimizeBox = $false
-    $dlg.Font = New-Object Drawing.Font('Segoe UI', 9)
+    $dlg.Font = $fUi
+    $dlg.Add_HandleCreated({ param($s, $e) [LTK.UI.Theme]::DarkTitle($s.Handle, $panel) })
 
-    $head = New-Object Windows.Forms.Label
-    $head.Dock = 'Top'; $head.Height = Px 64; $head.Padding = Pad 14 10 14 0
-    $head.Text = $intro; $head.BackColor = $panel
+    $head = New-Object Windows.Forms.Panel
+    $head.Dock = 'Top'; $head.Height = Px 92; $head.BackColor = $panel
+    $ht = New-Object Windows.Forms.Label
+    $ht.Text = $title; $ht.Font = $fTitle; $ht.ForeColor = $fg; $ht.AutoSize = $true
+    $ht.Location = New-Object Drawing.Point((Px 20), (Px 12))
+    $hi = New-Object Windows.Forms.Label
+    $hi.Text = $intro; $hi.ForeColor = $cDim; $hi.Font = $fSmall
+    $hi.Location = New-Object Drawing.Point((Px 21), (Px 46)); $hi.Size = Sz 700 42
+    $head.Controls.AddRange(@($ht, $hi))
 
     $flow = New-Object Windows.Forms.FlowLayoutPanel
     $flow.Dock = 'Fill'; $flow.FlowDirection = 'TopDown'; $flow.WrapContents = $false; $flow.AutoScroll = $true
-    $flow.Padding = Pad 14 6 10 10
-    $w = Px 640
+    $flow.Padding = Pad 20 4 12 14; $flow.BackColor = $bg
+    $w = Px 670
     $script:OptBoxes = New-Object Collections.ArrayList
     $grp = $null
     foreach ($it in $items) {
@@ -640,48 +998,49 @@ function Show-Options([string]$title, [string]$intro, [object[]]$items, [string]
             $grp = $it.Group
             $gl = New-Object Windows.Forms.Label
             $gl.Text = $grp.ToUpper(); $gl.ForeColor = $accent; $gl.AutoSize = $true
-            $gl.Font = New-Object Drawing.Font('Segoe UI', 9, [Drawing.FontStyle]::Bold)
-            $gl.Margin = Pad 0 12 0 2
+            $gl.Font = $fTileCap
+            $gl.Margin = Pad 0 16 0 2
             $flow.Controls.Add($gl)
         }
         $cb = New-Object Windows.Forms.CheckBox
         $cb.Text = $it.Text; $cb.Checked = [bool]$it.On; $cb.Tag = $it.Key
-        $cb.AutoSize = $true; $cb.MaximumSize = New-Object Drawing.Size($w, 0)
-        $cb.Font = New-Object Drawing.Font('Segoe UI', 9.5, [Drawing.FontStyle]::Bold)
-        $cb.Margin = Pad 0 6 0 0
+        $cb.Font = $fSemi; $cb.ForeColor = $fg; $cb.Cursor = [Windows.Forms.Cursors]::Hand
+        # AutoSize не переносит длинные строки - высоту считаем сами
+        $txtSize = [Windows.Forms.TextRenderer]::MeasureText($it.Text, $fSemi, (New-Object Drawing.Size(($w - (Px 30)), 0)), [Windows.Forms.TextFormatFlags]::WordBreak)
+        $cb.AutoSize = $false; $cb.Width = $w; $cb.Height = $txtSize.Height + (Px 6)
+        $cb.CheckAlign = 'TopLeft'; $cb.TextAlign = 'TopLeft'
+        $cb.FlatStyle = 'Flat'
+        $cb.FlatAppearance.BorderColor = $accent
+        $cb.FlatAppearance.CheckedBackColor = [LTK.UI.Theme]::Mix($bg, $accent, 0.35)
+        $cb.FlatAppearance.MouseOverBackColor = $panel2
+        $cb.Margin = Pad 0 8 0 0
         $flow.Controls.Add($cb)
         [void]$script:OptBoxes.Add($cb)
         if ($it.Hint) {
             $h = New-Object Windows.Forms.Label
-            $h.Text = $it.Hint; $h.ForeColor = $cDim; $h.AutoSize = $true
+            $h.Text = $it.Hint; $h.ForeColor = $cDim; $h.AutoSize = $true; $h.Font = $fSmall
             $h.MaximumSize = New-Object Drawing.Size(($w - (Px 22)), 0)
-            $h.Margin = Pad 20 0 0 2
+            $h.Margin = Pad 20 1 0 2
             $flow.Controls.Add($h)
         }
     }
 
     $bar = New-Object Windows.Forms.FlowLayoutPanel
-    $bar.Dock = 'Bottom'; $bar.Height = Px 52; $bar.BackColor = $panel
-    $bar.FlowDirection = 'RightToLeft'; $bar.Padding = Pad 8 9 8 0
-    $mk = {
-        param($t, $primary)
-        $b = New-Object Windows.Forms.Button
-        $b.Text = $t; $b.Height = Px 34; $b.AutoSize = $true; $b.MinimumSize = Sz 110 34
-        $b.FlatStyle = 'Flat'; $b.FlatAppearance.BorderColor = $accent; $b.ForeColor = $fg
-        $b.BackColor = $(if ($primary) { $accentD } else { $panel })
-        $b.Margin = Pad 6 0 0 0
-        $b
-    }
-    $ok = & $mk $okText $true; $ok.DialogResult = 'OK'
-    $cancel = & $mk 'Отмена' $false; $cancel.DialogResult = 'Cancel'
-    $all = & $mk 'Отметить всё' $false
+    $bar.Dock = 'Bottom'; $bar.Height = Px 60; $bar.BackColor = $panel
+    $bar.FlowDirection = 'RightToLeft'; $bar.Padding = Pad 12 13 10 0
+    $ok = New-Chip $okText 150 -Primary; $ok.Height = Px 34; $ok.Font = $fSemi
+    $ok.DialogResult = [Windows.Forms.DialogResult]::OK
+    $cancel = New-Chip 'Отмена' 110; $cancel.Height = Px 34
+    $cancel.DialogResult = [Windows.Forms.DialogResult]::Cancel
+    $all = New-Chip 'Отметить всё' 130; $all.Height = Px 34
     $all.Add_Click({ foreach ($c in $script:OptBoxes) { $c.Checked = $true } })
-    $none = & $mk 'Снять всё' $false
+    $none = New-Chip 'Снять всё' 110; $none.Height = Px 34
     $none.Add_Click({ foreach ($c in $script:OptBoxes) { $c.Checked = $false } })
     $bar.Controls.AddRange(@($ok, $cancel, $none, $all))
 
     $dlg.Controls.Add($flow); $dlg.Controls.Add($head); $dlg.Controls.Add($bar)
     $dlg.AcceptButton = $ok; $dlg.CancelButton = $cancel
+    $dlg.Add_Shown({ param($s, $e) [LTK.UI.Theme]::DarkScroll($flow) })
     $res = $dlg.ShowDialog($form)
     $sel = $null
     if ($res -eq [Windows.Forms.DialogResult]::OK) {
@@ -1011,7 +1370,7 @@ function Do-GpuPeak {
     if (-not $Smi) { Out-Box '!!! nvidia-smi не найден.'; return }
     if ([LTK.Pwr]::OnAC() -ne 1) { Out-Box '[!] Подключите зарядку: на батарее 140 Вт недостижимы.' }
     $script:GpuPeak = 0.0
-    $chkGpu.Checked = $true
+    $script:GpuMon = $true
     Out-Box 'Мониторинг GPU включён, пик обнулён. Запустите тяжёлую игру или FurMark 2 на 3-5 минут',
             'и смотрите строку GPU сверху: «пик» - максимальное потребление за замер.',
             '  ~140 Вт - всё работает; ~115 Вт - не работает Dynamic Boost или не включён режим Turbo;',
@@ -1652,80 +2011,225 @@ function Do-Save {
     Out-Ok '', "Отчёт сохранён: $p"
 }
 
-# ---------------- КНОПКИ ----------------
-Add-Section 'ДИАГНОСТИКА'
-Add-Btn 'ПОЛНАЯ ПРОВЕРКА (всё + отчёт)' { Do-Full } 'Все проверки подряд и сохранение отчёта в папку LaptopToolkit на рабочем столе.' -Primary
-Add-Btn 'Система / процессор' { Do-System }
-Add-Btn 'Оперативная память' { Do-Ram }
-Add-Btn 'Видеокарта' { Do-Gpu }
-Add-Btn 'Диски / SSD' { Do-Disk }
-Add-Btn 'Батарея (износ, отчёт)' { Do-Battery }
-Add-Btn 'Проблемные драйверы' { Do-Drivers }
-Add-Btn 'Журнал сбоев (BSOD, WHEA)' { Do-Events }
+# ---------------- РАЗДЕЛЫ И КАРТОЧКИ ----------------
+$script:Pages = [ordered]@{}
+$script:NavItems = @{}
+$script:PageKey = $null
 
-Add-Section 'ВИДЕОКАРТА 140 ВТ'
-Add-Btn '140 Вт: разблокировать' { Do-Gpu140 } 'Включает Dynamic Boost, службы NVIDIA и режим «Максимальная производительность» от сети. vBIOS не трогает.' -Primary
-Add-Btn 'Проверить мощность GPU' { Do-GpuCheck } 'Только показывает лимиты, Dynamic Boost и режимы - ничего не меняет.'
-Add-Btn 'Замер пиковой мощности GPU' { Do-GpuPeak } 'Включает мониторинг GPU и показывает пик ватт, пока вы играете или гоняете FurMark.'
+function Add-Page([string]$key, [string]$title, [string]$desc) {
+    $script:Pages[$key] = @{ Title = $title; Desc = $desc; Cards = (New-Object Collections.ArrayList) }
+    $n = New-Object LTK.UI.NavItem
+    $n.Text = $title; $n.Glyph = Ico $key; $n.GlyphFont = $fIconNav; $n.Font = $fUi
+    $n.Size = Sz 208 42; $n.Margin = Pad 0 0 0 3; $n.Tag = $key
+    $n.Add_Click({ param($s, $e) Show-Page $s.Tag })
+    $navFlow.Controls.Add($n)
+    $script:NavItems[$key] = $n
+    $script:CurPage = $key
+}
 
-Add-Section 'БАТАРЕЯ / АВТОНОМНОСТЬ'
-Add-Btn 'Максимальная автономность' { Do-BatteryOptimize } 'Настройки, которые действуют только на батарее: 60 Гц, без турбобуста, экономия энергии, сон, устройства.' -Primary
-Add-Btn 'Состояние питания сейчас' { Do-PowerStatus } 'Источник питания, режим Windows, частота экрана и все настройки батареи.'
-Add-Btn 'Что не даёт видеокарте уснуть' { Do-GpuHolders } 'Какие программы держат RTX 4070 включённой и садят батарею.'
-Add-Btn 'Энергоотчёт (что мешает экономии)' { Do-EnergyReport } 'powercfg /energy: 60 секунд наблюдения, HTML-отчёт с проблемами.'
-Add-Btn 'Расход во сне (Sleep Study)' { Do-SleepStudy } 'Сколько заряда ушло во сне и что не давало спать.'
-Add-Btn 'Журнал автопереключения' { Do-AgentLog } 'Когда и что переключалось при подключении/отключении зарядки.'
-Add-Btn 'Откатить настройки батареи' { Do-BatteryUndo } 'Возвращает исходные значения всего, что изменила «Максимальная автономность».'
+# Карточка добавляется в текущий раздел (последний Add-Page) и, с -Home, на главную.
+function Add-Card([string]$title, [string]$desc, [scriptblock]$action, [switch]$Primary, [string]$Page = $script:CurPage) {
+    $c = New-Object LTK.UI.Card
+    $c.Title = $title; $c.Desc = $desc; $c.Primary = [bool]$Primary
+    $c.Glyph = Ico $Page; $c.GlyphFont = $fIcon; $c.TitleFont = $fSemi; $c.DescFont = $fSmall
+    $c.Tag = @{ Name = $title; Action = $action }
+    $c.Add_Click({ param($s, $e) Invoke-Safe $s.Tag.Name $s.Tag.Action })
+    [void]$script:Pages[$Page].Cards.Add($c)
+}
 
-Add-Section 'ОПТИМИЗАЦИЯ WINDOWS'
-Add-Btn 'Оптимизация Windows' { Do-WinOptimize } 'Игры, приватность, реклама, мусорные приложения - с выбором галочками.' -Primary
-Add-Btn 'Точка восстановления' { Do-Restore }
-Add-Btn 'Автозагрузка программ' { Do-Startup }
-Add-Btn 'Очистка диска' { Do-Cleanup }
-Add-Btn 'Ремонт Windows (DISM+SFC)' { Do-Repair }
-Add-Btn 'Обновить всё' { Do-Update }
-Add-Btn 'Драйверы NVIDIA / AMD' { Do-DriversWeb }
-Add-Btn 'Chris Titus WinUtil' { Do-WinUtil }
-Add-Btn 'Откатить оптимизацию Windows' { Do-WinUndo } 'Возвращает исходные значения всего, что изменила «Оптимизация Windows» (кроме удалённых приложений).'
+function Update-CardLayout {
+    if ($script:InLayout) { return }
+    $script:InLayout = $true
+    try {
+        $list = @($cards.Controls)
+        $n = $list.Count
+        if (-not $n) { $cards.Height = 0; return }
+        $W = $cards.ClientSize.Width
+        $gap = Px 12; $ch = Px 88
+        $cols = [int][math]::Max(1, [math]::Min($n, [math]::Floor(($W + $gap) / ((Px 290) + $gap))))
+        $cw = [int][math]::Floor(($W - $gap * ($cols - 1)) / $cols) - 1
+        for ($i = 0; $i -lt $n; $i++) {
+            $list[$i].Size = New-Object Drawing.Size($cw, $ch)
+            $right = if (($i % $cols) -eq ($cols - 1)) { 0 } else { $gap }
+            $list[$i].Margin = New-Object Windows.Forms.Padding(0, 0, $right, $gap)
+        }
+        $cards.Height = [int]([math]::Ceiling($n / $cols) * ($ch + $gap))
+    } finally { $script:InLayout = $false }
+}
 
-Add-Section 'ВИРУСЫ'
-Add-Btn 'Статус антивируса и угрозы' { Do-AvStatus }
-Add-Btn 'Поиск подозрительного' { Do-Suspicious }
-Add-Btn 'Быстрая проверка Защитником' { Do-QuickScan }
-Add-Btn 'Полная проверка Защитником' { Do-FullScan }
-Add-Btn 'Автономная проверка (ребут)' { Do-OfflineScan }
-Add-Btn 'Microsoft Safety Scanner' { Do-Msert }
-Add-Btn 'Второе мнение (KVRT)' { Do-Kvrt }
+function Show-Page([string]$key) {
+    if ($script:PageKey -eq $key) { return }
+    $script:PageKey = $key
+    foreach ($k in $script:NavItems.Keys) { $script:NavItems[$k].Selected = ($k -eq $key); $script:NavItems[$k].Invalidate() }
+    $p = $script:Pages[$key]
+    $pageTitle.Text = $p.Title
+    $pageDesc.Text = $p.Desc
+    $main.SuspendLayout()
+    $cards.Controls.Clear()
+    $cards.Controls.AddRange([Windows.Forms.Control[]]@($p.Cards))
+    Update-CardLayout
+    $main.ResumeLayout()
+}
+$cards.Add_SizeChanged({ Update-CardLayout })
 
-Add-Section 'ТЕСТЫ'
-Add-Btn 'Стресс CPU 1 мин' { Start-CpuStress 60 }
-Add-Btn 'Стресс CPU 10 мин' { Start-CpuStress 600 }
-Add-Btn 'Остановить стресс' { Stop-CpuStress }
-Add-Btn 'Тест RAM (перезагрузка)' { Do-RamTest }
-Add-Btn 'Тест скорости диска' { Do-DiskSpeed }
+Add-Page 'home' 'Главная' 'Самое важное для этого ноутбука - по порядку, сверху вниз.'
+Add-Card 'Полная проверка' 'Все проверки подряд и отчёт в папку LaptopToolkit на рабочем столе.' { Do-Full } -Primary
+Add-Card '140 Вт: разблокировать' 'Полная мощность RTX 4070 от сети: Dynamic Boost, службы NVIDIA, режим Windows.' { Do-Gpu140 } -Primary
+Add-Card 'Оптимизация Windows' 'Игры, приватность, реклама, лишние приложения - выбор галочками.' { Do-WinOptimize } -Primary
+Add-Card 'Максимальная автономность' 'Только на батарее: 60 Гц, без турбобуста, экономия, сон. От сети - на полную.' { Do-BatteryOptimize } -Primary
+Add-Card 'Точка восстановления' 'Снимок системы перед изменениями. Откат: Win+R -> rstrui.' { Do-Restore }
+Add-Card 'Состояние питания сейчас' 'Источник, режим Windows, частота экрана и все настройки батареи.' { Do-PowerStatus }
 
-Add-Section 'РАЗГОН'
-Add-Btn 'Гайд по разгону' { Do-OcGuide }
-Add-Btn 'Установить утилиты' { Do-Tools }
-Add-Btn 'Запустить MSI Afterburner' { Do-Afterburner }
+Add-Page 'diag' 'Диагностика' 'Проверка железа и системы. Ничего не меняет.'
+Add-Card 'Полная проверка' 'Все проверки подряд и сохранение отчёта.' { Do-Full } -Primary
+Add-Card 'Система и процессор' 'Модель, Windows, BIOS, Secure Boot, TPM, VBS.' { Do-System }
+Add-Card 'Оперативная память' 'Планки, частота, одноканальный режим.' { Do-Ram }
+Add-Card 'Видеокарта' 'Драйвер, частоты, температура, лимиты мощности.' { Do-Gpu }
+Add-Card 'Диски и SSD' 'Здоровье, износ, температура, свободное место, TRIM.' { Do-Disk }
+Add-Card 'Батарея' 'Износ, ёмкость, циклы и подробный HTML-отчёт Windows.' { Do-Battery }
+Add-Card 'Проблемные драйверы' 'Устройства с ошибками в Диспетчере устройств.' { Do-Drivers }
+Add-Card 'Журнал сбоев' 'Синие экраны, WHEA, сбои видеодрайвера за 30 дней.' { Do-Events }
 
-Add-Section 'WINDOWS'
-Add-Btn 'Как поставить чистую Windows' { Do-WinGuide }
-Add-Btn 'Бэкап драйверов' { Do-DriverBackup }
-Add-Btn 'Скачать Windows 11 (офиц.)' { Start-Process 'https://www.microsoft.com/software-download/windows11'; Out-Box 'Открыт сайт Microsoft.' }
+Add-Page 'gpu' 'Видеокарта 140 Вт' 'RTX 4070 Laptop: 115 Вт база + 25 Вт Dynamic Boost. Только от сети. vBIOS не трогается.'
+Add-Card '140 Вт: разблокировать' 'Включает Dynamic Boost и службы NVIDIA, режим «Максимальная производительность» от сети.' { Do-Gpu140 } -Primary
+Add-Card 'Проверить мощность' 'Лимиты, Dynamic Boost и режимы - только показывает, ничего не меняет.' { Do-GpuCheck }
+Add-Card 'Замер пиковой мощности' 'Включает слежение за GPU и запоминает пик ватт, пока вы играете.' { Do-GpuPeak }
+Add-Card 'Что держит видеокарту' 'Какие программы не дают RTX 4070 уснуть.' { Do-GpuHolders }
 
-Add-Section 'ОТЧЁТ'
-Add-Btn 'Сохранить отчёт' { Do-Save }
-Add-Btn 'Открыть папку отчётов' { Start-Process explorer.exe $ReportDir }
-Add-Btn 'Очистить экран' { $box.Clear(); [void]$script:Log.Clear() }
+Add-Page 'battery' 'Батарея' 'Всё, что продлевает работу без зарядки. Действует только на батарее.'
+Add-Card 'Максимальная автономность' '60 Гц, без турбобуста, экономия энергии, сон, устройства - галочками.' { Do-BatteryOptimize } -Primary
+Add-Card 'Состояние питания сейчас' 'Источник, режим Windows, частота экрана и все настройки батареи.' { Do-PowerStatus }
+Add-Card 'Что не даёт видеокарте уснуть' 'Программы, которые будят RTX 4070 и садят батарею.' { Do-GpuHolders }
+Add-Card 'Энергоотчёт' '60 секунд наблюдения Windows: что мешает экономии энергии.' { Do-EnergyReport }
+Add-Card 'Расход во сне' 'Sleep Study: сколько заряда ушло во сне и почему.' { Do-SleepStudy }
+Add-Card 'Журнал автопереключения' 'Когда и что переключалось при подключении и отключении зарядки.' { Do-AgentLog }
+Add-Card 'Откатить настройки батареи' 'Вернуть всё, что изменила «Максимальная автономность».' { Do-BatteryUndo }
+
+Add-Page 'windows' 'Оптимизация Windows' 'Быстрее и тише: без рекламы, телеметрии и лишнего. Всё откатывается.'
+Add-Card 'Оптимизация Windows' 'Игры, приватность, реклама, мусорные приложения - выбор галочками.' { Do-WinOptimize } -Primary
+Add-Card 'Точка восстановления' 'Снимок системы перед изменениями.' { Do-Restore }
+Add-Card 'Автозагрузка программ' 'Диспетчер задач: отключить лишнее при включении.' { Do-Startup }
+Add-Card 'Очистка диска' 'Временные файлы, корзина и старые обновления.' { Do-Cleanup }
+Add-Card 'Ремонт Windows' 'DISM + SFC: восстановление системных файлов.' { Do-Repair }
+Add-Card 'Обновить всё' 'Программы через winget и Центр обновления Windows.' { Do-Update }
+Add-Card 'Драйверы NVIDIA и AMD' 'Официальные страницы драйверов видеокарты и чипсета.' { Do-DriversWeb }
+Add-Card 'Chris Titus WinUtil' 'Сторонняя утилита твиков. Не отключайте в ней службы NVIDIA.' { Do-WinUtil }
+Add-Card 'Откатить оптимизацию' 'Вернуть всё, что изменила «Оптимизация Windows» (кроме удалённых приложений).' { Do-WinUndo }
+
+Add-Page 'security' 'Безопасность' 'Антивирус, подозрительная автозагрузка и проверки Защитником.'
+Add-Card 'Статус антивируса' 'Защитник, базы, история угроз, исключения.' { Do-AvStatus } -Primary
+Add-Card 'Поиск подозрительного' 'Автозагрузка, задачи, службы, процессы, hosts, прокси.' { Do-Suspicious }
+Add-Card 'Быстрая проверка' 'Защитник Windows: обновить базы и проверить.' { Do-QuickScan }
+Add-Card 'Полная проверка' 'Все диски, 1-3 часа.' { Do-FullScan }
+Add-Card 'Автономная проверка' 'До загрузки Windows, ловит руткиты. Перезагрузка.' { Do-OfflineScan }
+Add-Card 'Microsoft Safety Scanner' 'Официальный одноразовый сканер Microsoft.' { Do-Msert }
+Add-Card 'Второе мнение (KVRT)' 'Бесплатный сканер Kaspersky без установки.' { Do-Kvrt }
+
+Add-Page 'tests' 'Тесты' 'Нагрузка и проверка стабильности. Подключите зарядку.'
+Add-Card 'Стресс CPU 1 мин' 'Быстрая проверка частот и охлаждения.' { Start-CpuStress 60 }
+Add-Card 'Стресс CPU 10 мин' 'Длительная нагрузка: троттлинг и стабильность.' { Start-CpuStress 600 }
+Add-Card 'Остановить стресс' 'Прервать тест и показать итог.' { Stop-CpuStress }
+Add-Card 'Тест памяти' 'Средство проверки памяти Windows. Перезагрузка.' { Do-RamTest }
+Add-Card 'Скорость диска' 'Встроенный тест winsat.' { Do-DiskSpeed }
+
+Add-Page 'oc' 'Разгон' 'Андервольт и разгон RTX 4070 через MSI Afterburner.'
+Add-Card 'Гайд по разгону' 'Пошагово: частоты, память, андервольт.' { Do-OcGuide } -Primary
+Add-Card 'Установить утилиты' 'HWiNFO, Afterburner, OCCT, FurMark и другие через winget.' { Do-Tools }
+Add-Card 'Запустить Afterburner' 'Открыть MSI Afterburner, если установлен.' { Do-Afterburner }
+
+Add-Page 'install' 'Переустановка' 'Чистая Windows вместо «сборок» - пошагово.'
+Add-Card 'Как поставить чистую Windows' 'План переустановки и что сохранить заранее.' { Do-WinGuide } -Primary
+Add-Card 'Бэкап драйверов' 'Сохранить все драйверы в папку отчётов.' { Do-DriverBackup }
+Add-Card 'Скачать Windows 11' 'Официальная страница Microsoft.' { Start-Process 'https://www.microsoft.com/software-download/windows11'; Out-Box 'Открыт сайт Microsoft.' }
+
+$chipSave.Add_Click({ Invoke-Safe 'Сохранить отчёт' { Do-Save } })
+$chipFolder.Add_Click({ Start-Process explorer.exe $ReportDir })
+$chipClear.Add_Click({ $box.Clear(); [void]$script:Log.Clear() })
 
 # ---------------- МОНИТОР ----------------
+$script:GpuMon = $false
+$tileGpu.Add_Click({
+    if (-not $script:GpuMon -and [LTK.Pwr]::OnAC() -eq 0) {
+        $statusLbl.Text = 'На батарее слежение за GPU не включается: оно будит видеокарту.'
+        return
+    }
+    $script:GpuMon = -not $script:GpuMon
+    Update-Monitor
+})
+
 function Update-State {
     $ac = [LTK.Pwr]::OnAC()
     $ov = [LTK.Pwr]::GetOverlay()
     $ovName = if ($OverlayNames.ContainsKey($ov)) { $OverlayNames[$ov] } else { 'н/д' }
+    if ($ac -eq 1) { $badgePower.Set('От сети', $cOk) }
+    elseif ($ac -eq 0) { $badgePower.Set('От батареи', $cWarn) }
+    else { $badgePower.Set('Питание: ?', $cDim) }
+    $tone = if ($ov -eq $OV_PERF) { $accent } elseif ($ov -eq $OV_EFF) { $cOk } else { $cDim }
+    $badgeMode.Set("Режим: $ovName", $tone)
     $agent = if ($script:AgentOn) { 'вкл' } else { 'выкл' }
-    $stateLbl.Text = "Питание: $(if ($ac -eq 1) {'сеть'} elseif ($ac -eq 0) {'батарея'} else {'?'})   |   Режим: $ovName   |   Экран: $([LTK.Disp]::Current()) Гц   |   Автопереключение: $agent"
+    $stateLbl.Text = "Экран: $([LTK.Disp]::Current()) Гц    ·    Автопереключение: $agent    ·    Отчёты: $ReportDir"
+}
+
+function Update-Monitor {
+    $ac = [LTK.Pwr]::OnAC()
+    $p = $null
+    try { $p = Get-CimInstance Win32_PerfFormattedData_Counters_ProcessorInformation -Filter "Name='_Total'" -ErrorAction Stop } catch { }
+    if ($p) {
+        $ghz = [math]::Round($MaxMHz * $p.PercentProcessorPerformance / 100 / 1000, 2)
+        $load = [int]$p.PercentProcessorTime
+        $sub = "$ghz ГГц"
+        if ($script:StressJobs.Count) {
+            $script:StressGHz.Add($ghz)
+            $left_s = [int]($script:StressEnd - (Get-Date)).TotalSeconds
+            $sub += "  ·  стресс-тест: ещё $([math]::Max(0, $left_s)) с"
+            if ((Get-Date) -gt $script:StressEnd.AddSeconds(3)) { Stop-CpuStress -Finished }
+        }
+        $tileCpu.Set("$load %", $sub, $load, $(if ($load -ge 90) { $cWarn } else { $accent }))
+    } else { $tileCpu.Set('н/д', 'счётчики недоступны', -1, $cDim) }
+
+    $mem = [LTK.Win]::Memory()
+    if ($mem[0]) {
+        $tot = [math]::Round($mem[0] / 1GB, 1); $used = [math]::Round(($mem[0] - $mem[1]) / 1GB, 1)
+        $pct = [int](($mem[0] - $mem[1]) * 100 / $mem[0])
+        $tileRam.Set("$pct %", "$used из $tot ГБ", $pct, $(if ($pct -ge 85) { $cWarn } else { $accent }))
+    }
+
+    if ([LTK.Pwr]::HasBattery()) {
+        $bp = [LTK.Pwr]::BatteryPercent()
+        $sub = 'от сети'
+        if ($ac -ne 1) {
+            $parts = @()
+            $sec = [LTK.Pwr]::BatterySeconds()
+            if ($sec -gt 0) { $parts += "≈ $([int][math]::Floor($sec / 3600)) ч $([int](($sec % 3600) / 60)) мин" }
+            if (-not $script:NoBatWmi) {
+                try {
+                    $bs = Get-CimInstance -Namespace root\wmi -ClassName BatteryStatus -ErrorAction Stop | Select-Object -First 1
+                    if ($bs.DischargeRate -gt 0) { $parts += "расход $([math]::Round($bs.DischargeRate / 1000, 1)) Вт" }
+                } catch { $script:NoBatWmi = $true }
+            }
+            $sub = if ($parts.Count) { $parts -join '  ·  ' } else { 'от батареи' }
+        }
+        $col = if ($bp -lt 15) { $cErr } elseif ($bp -lt 30) { $cWarn } else { $cOk }
+        $tileBat.Set($(if ($bp -ge 0) { "$bp %" } else { '?' }), $sub, $bp, $col)
+    } else { $tileBat.Set('нет', 'батарея не найдена', -1, $cDim) }
+
+    if ($ac -eq 0 -and $script:GpuMon) {
+        $script:GpuMon = $false
+        Out-Dim 'Слежение за GPU выключено: на батарее оно не даёт видеокарте уснуть.'
+    }
+    if (-not $Smi) { $tileGpu.Set('н/д', 'драйвер NVIDIA не найден', -1, $cDim) }
+    elseif (-not $script:GpuMon) { $tileGpu.Set('не слежу', 'нажмите, чтобы включить (будит GPU)', -1, $cDim) }
+    else {
+        $q = @(& $Smi --query-gpu=temperature.gpu,utilization.gpu,power.draw,enforced.power.limit --format=csv,noheader,nounits 2>$null)
+        if ($q.Count) {
+            $v = "$($q[0])" -split ',\s*'
+            $w = Num $v[2]
+            if ($w -gt $script:GpuPeak) { $script:GpuPeak = $w }
+            $val = if ($null -ne $w) { "$([math]::Round($w)) Вт" } else { "$($v[2]) Вт" }
+            $tileGpu.Set($val, "$($v[0]) °C  ·  $($v[1]) %  ·  пик $([math]::Round($script:GpuPeak)) Вт", $(if ($w) { $w * 100 / 140 } else { 0 }), $accent)
+        } else { $tileGpu.Set('?', 'nvidia-smi не ответил', -1, $cWarn) }
+    }
+    Update-State
 }
 
 $timer = New-Object Windows.Forms.Timer
@@ -1734,67 +2238,24 @@ $timer.Add_Tick({
     $timer.Stop()   # Out-Box вызывает DoEvents - не даём тику войти сам в себя
     try {
         if ($form.WindowState -eq 'Minimized') { return }   # свёрнуто - не тратим батарею на опрос
-        $ac = [LTK.Pwr]::OnAC()
-        $timer.Interval = if ($ac -eq 0) { 5000 } else { 2000 }
-
-        $p = Get-CimInstance Win32_PerfFormattedData_Counters_ProcessorInformation -Filter "Name='_Total'"
-        $ghz = [math]::Round($MaxMHz * $p.PercentProcessorPerformance / 100 / 1000, 2)
-        $mem = [LTK.Win]::Memory()
-        $tot = [math]::Round($mem[0] / 1GB, 1)
-        $used = [math]::Round(($mem[0] - $mem[1]) / 1GB, 1)
-        $b = ''
-        if ([LTK.Pwr]::HasBattery()) {
-            $b = "   Батарея: $([LTK.Pwr]::BatteryPercent())%"
-            if ($ac -eq 1) { $b += ' (сеть)' }
-            else {
-                $sec = [LTK.Pwr]::BatterySeconds()
-                if ($sec -gt 0) { $b += " (~$([int][math]::Floor($sec / 3600)) ч $([int](($sec % 3600) / 60)) мин)" }
-                if (-not $script:NoBatWmi) {
-                    try {
-                        $bs = Get-CimInstance -Namespace root\wmi -ClassName BatteryStatus -ErrorAction Stop | Select-Object -First 1
-                        if ($bs.DischargeRate -gt 0) { $b += "  расход $([math]::Round($bs.DischargeRate / 1000, 1)) Вт" }
-                    } catch { $script:NoBatWmi = $true }
-                }
-            }
-        }
-        $line1 = "CPU: $($p.PercentProcessorTime)% @ $ghz ГГц   RAM: $used / $tot ГБ$b"
-
-        if ($ac -eq 0 -and $chkGpu.Checked) {
-            $chkGpu.Checked = $false
-            Out-Dim 'Мониторинг GPU выключен: на батарее он не даёт видеокарте уснуть.'
-        }
-        $line2 = 'GPU: мониторинг выкл (галочка справа)'
-        if ($chkGpu.Checked -and $Smi) {
-            $q = & $Smi --query-gpu=temperature.gpu,utilization.gpu,power.draw,enforced.power.limit,clocks.gr --format=csv,noheader,nounits 2>$null | Select-Object -First 1
-            if ($q) {
-                $v = "$q" -split ',\s*'
-                $w = Num $v[2]
-                if ($w -gt $script:GpuPeak) { $script:GpuPeak = $w }
-                $line2 = "GPU: $($v[0]) °C | $($v[1]) % | $($v[2]) Вт (лимит $($v[3]), пик $([math]::Round($script:GpuPeak, 1))) | $($v[4]) МГц"
-            }
-        }
-        if ($script:StressJobs.Count) {
-            $script:StressGHz.Add($ghz)
-            $left_s = [int]($script:StressEnd - (Get-Date)).TotalSeconds
-            $line2 += "      СТРЕСС-ТЕСТ: осталось $([math]::Max(0, $left_s)) с"
-            if ((Get-Date) -gt $script:StressEnd.AddSeconds(3)) { Stop-CpuStress -Finished }
-        }
-        $mon.Text = "$line1`r`n$line2"
-        Update-State
-    } catch { $mon.Text = "Монитор: $($_.Exception.Message)" }
+        $timer.Interval = if ([LTK.Pwr]::OnAC() -eq 0) { 5000 } else { 2000 }
+        Update-Monitor
+    } catch { $statusLbl.Text = "Монитор: $($_.Exception.Message)" }
     finally { $timer.Start() }
 })
 
 $form.Add_Shown({
+    foreach ($c in $box, $navFlow) { [LTK.UI.Theme]::DarkScroll($c) }
     $script:AgentOn = Test-AgentTask
-    Update-State
+    Show-Page 'home'
+    try { Update-Monitor } catch { }
     $timer.Start()
     Out-Box "Laptop Toolkit v$Version" $accent
-    Out-Box 'С чего начать:',
-        '  1. «ПОЛНАЯ ПРОВЕРКА» - отчёт сохранится в папку LaptopToolkit на рабочем столе.',
+    Out-Box 'С чего начать - раздел «Главная», карточки сверху вниз:',
+        '  1. «Полная проверка» - отчёт сохранится в папку LaptopToolkit на рабочем столе.',
         '  2. «140 Вт: разблокировать» - полная мощность RTX 4070 от сети.',
         '  3. «Оптимизация Windows» и «Максимальная автономность» - быстрее от сети, дольше от батареи.',
-        'Наведите курсор на кнопку - появится подсказка.'
+        'Плитка «Видеокарта» сверху включает слежение за GPU.'
     Invoke-Safe 'Система' { Do-System; Do-Ram }
 })
 $form.Add_FormClosing({
