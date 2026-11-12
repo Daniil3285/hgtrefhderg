@@ -1,4 +1,4 @@
-﻿# LaptopToolkit v3.1 - Skytech Noir (Ryzen 7 8845HS / DDR5-5600 / RTX 4070 Laptop до 140 Вт)
+﻿# LaptopToolkit v3.2 - Skytech Noir (Ryzen 7 8845HS / DDR5-5600 / RTX 4070 Laptop до 140 Вт)
 # Файл должен быть в UTF-8 с BOM: иначе Windows PowerShell 5.1 ломает кириллицу.
 
 $isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole(
@@ -11,7 +11,7 @@ if (-not $isAdmin) {
 }
 
 $ProgressPreference = 'SilentlyContinue'
-$Version = '3.1'
+$Version = '3.2'
 
 # ---------------- нативные функции ----------------
 # Этот же код сохраняется в ProgramData и используется агентом автопереключения,
@@ -1225,17 +1225,48 @@ function Num($s) {
 }
 
 function Get-GraphicsMode {
-    $nv = Get-CimInstance Win32_VideoController | Where-Object { $_.Name -match 'NVIDIA' } | Select-Object -First 1
+    $vc = @(Get-CimInstance Win32_VideoController -ErrorAction SilentlyContinue)
+    $nv = $vc | Where-Object { $_.Name -match 'NVIDIA' } | Select-Object -First 1
     if (-not $nv) { return 'none' }
-    if ($nv.CurrentHorizontalResolution) { return 'dgpu' }
-    return 'hybrid'
+    if (-not $nv.CurrentHorizontalResolution) { return 'hybrid' }
+    # Встроенный экран на Radeon, а RTX тоже выводит картинку - значит, к ней подключён внешний монитор.
+    $igpu = $vc | Where-Object { $_.Name -match 'AMD|Radeon' } | Select-Object -First 1
+    if ($igpu -and $igpu.CurrentHorizontalResolution) { return 'external' }
+    return 'dgpu'
 }
 function Get-GraphicsModeText {
     switch (Get-GraphicsMode) {
-        'dgpu'   { 'экран выводит RTX 4070 (MUX «Только дискретная» или внешний монитор) - максимум FPS, но на батарее расход сильно выше' }
-        'hybrid' { 'гибридный (Optimus): экран на Radeon 780M, RTX 4070 включается только для игр - лучший вариант для батареи' }
-        default  { 'NVIDIA не видна (драйвер не установлен или видеокарта отключена)' }
+        'dgpu'     { 'ТОЛЬКО ДИСКРЕТНАЯ: экран выводит RTX 4070 - максимум FPS, но она не засыпает и на батарее расход в разы выше' }
+        'external' { 'гибридный, но внешний монитор подключён к RTX 4070 - пока он подключён, видеокарта не засыпает' }
+        'hybrid'   { 'гибридный (Optimus): экран на Radeon 780M, RTX 4070 включается только для игр - лучший вариант для батареи' }
+        default    { 'NVIDIA не видна (драйвер не установлен или видеокарта отключена)' }
     }
+}
+
+function Open-NvidiaPanel {
+    try { Start-Process 'shell:AppsFolder\NVIDIACorp.NVIDIAControlPanel_56jybvy8sckqj!NVIDIACorp.NVIDIAControlPanel' -ErrorAction Stop; return }
+    catch { }
+    $exe = "$env:ProgramFiles\NVIDIA Corporation\Control Panel Client\nvcplui.exe"
+    if (Test-Path $exe) { Start-Process $exe } else { Out-Box '[!] Панель управления NVIDIA не найдена - установите её из Microsoft Store.' }
+}
+
+function Show-HybridHelp {
+    Out-Box '', 'КАК ВКЛЮЧИТЬ ГИБРИДНЫЙ РЕЖИМ (для батареи):',
+        '  1. Панель управления NVIDIA -> Дисплей -> «Управление режимом дисплея» (если такой пункт есть)',
+        '     -> «Оптимус NVIDIA» / «Автоматический выбор» -> перезагрузка.',
+        '  2. Если пункта нет - переключатель GPU / MUX / Hybrid в фирменной утилите ноутбука (Control Center)',
+        '     или в BIOS (обычно Advanced -> Display / Graphics Mode -> Hybrid, MSHybrid или Optimus).',
+        '  3. Внешний монитор через HDMI обычно подключён прямо к RTX 4070 - на батарее отключайте его.',
+        '  Для игр от сети можно снова включить «Только дискретная» - это +5..15% FPS.'
+}
+
+function Do-HybridHelp {
+    Head 'РЕЖИМ ГРАФИКИ'
+    $mode = Get-GraphicsMode
+    Out-Box "Сейчас: $(Get-GraphicsModeText)"
+    if ($mode -eq 'hybrid') { Out-Ok 'Всё правильно: на батарее RTX 4070 спит, пока не запущена игра.'; return }
+    Show-HybridHelp
+    if ($mode -ne 'external' -and (Ask-User 'Открыть Панель управления NVIDIA, чтобы переключить режим дисплея?' 'Режим графики')) { Open-NvidiaPanel }
 }
 
 function Get-Nvpcf {
@@ -1254,6 +1285,38 @@ function Get-CmCode($dev) {
     return -1
 }
 
+# Драйвер Dynamic Boost (nvpcf.inf) часто уже лежит в хранилище драйверов Windows или в распакованном
+# пакете NVIDIA (C:\NVIDIA), но не привязан к устройству. Пробуем установить его оттуда.
+function Repair-Nvpcf {
+    $infs = @(Get-ChildItem "$env:SystemRoot\System32\DriverStore\FileRepository" -Directory -Filter 'nvpcf.inf_*' -ErrorAction SilentlyContinue |
+        Sort-Object LastWriteTime -Descending | ForEach-Object { Join-Path $_.FullName 'nvpcf.inf' } | Where-Object { Test-Path $_ })
+    if (Test-Path 'C:\NVIDIA') {
+        $infs += @(Get-ChildItem 'C:\NVIDIA' -Recurse -Filter 'nvpcf.inf' -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending | ForEach-Object FullName)
+    }
+    if (-not $infs.Count) {
+        Out-Dim '  - Драйвера Dynamic Boost (nvpcf.inf) на диске нет - установить автоматически не из чего.'
+        return $false
+    }
+    foreach ($inf in $infs) {
+        Out-Dim "  - Устанавливаю драйвер Dynamic Boost: $inf"
+        & pnputil.exe /add-driver "$inf" /install 2>&1 | Out-Null
+        & pnputil.exe /scan-devices 2>&1 | Out-Null
+        Start-Sleep -Seconds 3
+        if ("$((@(Get-Nvpcf))[0].Status)" -eq 'OK') { return $true }
+    }
+    Out-Dim '  - Драйвер с диска не подошёл к устройству.'
+    return $false
+}
+
+function Show-DbHelp {
+    Out-Box '      КАК ПОЧИНИТЬ (по порядку, после каждого шага - перезагрузка и «Проверить мощность»):',
+            '      1. Параметры -> Центр обновления Windows -> Дополнительные параметры -> Необязательные обновления',
+            '         -> Обновления драйверов: установите всё от NVIDIA.',
+            '      2. Драйвер с nvidia.com (GeForce RTX 4070 Laptop) -> при установке «Выборочная» -> «Чистая установка».',
+            '         Устанавливайте именно полный пакет с сайта: Dynamic Boost ставится вместе с ним.',
+            '      3. Обновить BIOS и драйверы с сайта поддержки Skytech (там бывает отдельный пакет Dynamic Boost / NVPCF).'
+}
+
 function Show-GpuPower([switch]$Fix) {
     Head 'МОЩНОСТЬ ВИДЕОКАРТЫ (цель: 140 Вт = 115 Вт база + 25 Вт Dynamic Boost)'
     if (-not $Smi) { Out-Box '!!! Драйвер NVIDIA не найден (нет nvidia-smi). Кнопка «Драйверы NVIDIA / AMD».'; return }
@@ -1268,22 +1331,36 @@ function Show-GpuPower([switch]$Fix) {
     if ($ac -eq 1) { Out-Ok '  + Питание от сети' } else { Out-Box '  [!] Ноутбук на батарее: видеокарта урезана до ~50-80 Вт. 140 Вт - только от сети с родным блоком питания.' }
 
     # Dynamic Boost (+25 Вт) работает только через NVIDIA Platform Controllers and Framework.
-    $pcf = Get-Nvpcf
-    if (-not $pcf.Count) {
-        Out-Box '  [!] Dynamic Boost: компонент «NVIDIA Platform Controllers and Framework» не найден.',
-                '      Без него видеокарта не поднимется выше базовых ~115 Вт. Решение: обновить BIOS с сайта Skytech',
-                '      и переустановить драйвер NVIDIA (NVIDIA App -> Драйверы -> Переустановить -> «Чистая установка»).'
-    }
-    foreach ($d in $pcf) {
+    # @() обязателен: один найденный объект PowerShell 5.1 не считает массивом, и .Count у него пустой.
+    $pcf = @(Get-Nvpcf)
+    $script:DbState = 'missing'
+    if ($pcf.Count) {
+        $d = $pcf[0]
         $code = Get-CmCode $d
-        if ("$($d.Status)" -eq 'OK') { Out-Ok "  + Dynamic Boost: работает ($($d.FriendlyName))" }
-        elseif ($code -eq 22 -and $Fix) {
+        if ("$($d.Status)" -eq 'OK') { $script:DbState = 'ok' }
+        elseif ($code -eq 22) { $script:DbState = 'disabled' }
+        elseif ($code -eq 28) { $script:DbState = 'nodriver' }
+        else { $script:DbState = "error $code" }
+
+        if ($script:DbState -eq 'disabled' -and $Fix) {
             Enable-PnpDevice -InstanceId $d.InstanceId -Confirm:$false -ErrorAction SilentlyContinue
-            Out-Ok '  + Dynamic Boost был ОТКЛЮЧЁН в Диспетчере устройств - включил.'
+            Start-Sleep -Seconds 2
+            if ("$((@(Get-Nvpcf))[0].Status)" -eq 'OK') { $script:DbState = 'ok'; Out-Ok '  + Dynamic Boost был ОТКЛЮЧЁН в Диспетчере устройств - включил.' }
         }
-        elseif ($code -eq 22) { Out-Box '  [!] Dynamic Boost отключён в Диспетчере устройств - кнопка «140 Вт: разблокировать» включит его.' }
-        elseif ($code -eq 28) { Out-Box '  [!] Dynamic Boost: нет драйвера. Переустановите драйвер NVIDIA (чистая установка) - компонент ставится вместе с ним.' }
-        else { Out-Box "  [!] Dynamic Boost: ошибка устройства, код $code. Переустановите драйвер NVIDIA (чистая установка)." }
+        if ($script:DbState -ne 'ok' -and $script:DbState -ne 'disabled' -and $Fix) {
+            if (Repair-Nvpcf) { $script:DbState = 'ok'; Out-Ok '  + Драйвер Dynamic Boost установлен.' }
+        }
+    }
+    switch -Wildcard ($script:DbState) {
+        'ok'       { Out-Ok "  + Dynamic Boost: работает (+25 Вт в играх)" }
+        'disabled' { Out-Box '  [!] Dynamic Boost отключён в Диспетчере устройств - кнопка «140 Вт: разблокировать» включит его.' }
+        'missing'  { Out-Box '  [!] Dynamic Boost: устройство «NVIDIA Platform Controllers and Framework» не найдено - видеокарта ограничена ~115 Вт.'; Show-DbHelp }
+        default {
+            $why = if ($script:DbState -eq 'nodriver') { 'у устройства нет драйвера' } else { "ошибка устройства ($($script:DbState))" }
+            Out-Box "  [!] Dynamic Boost НЕ РАБОТАЕТ: $why. Пока это так, видеокарта не поднимется выше 115 Вт."
+            if (-not $Fix) { Out-Box '      Кнопка «140 Вт: разблокировать» попробует установить драйвер сама.' }
+            Show-DbHelp
+        }
     }
 
     # Службу NVIDIA часто отключают «оптимизаторы» - без неё ломаются Панель NVIDIA и управление питанием.
@@ -1309,7 +1386,10 @@ function Show-GpuVerdict {
     $v = Get-SmiValues @('power.max_limit', 'power.default_limit')
     $max = Num $v['power.max_limit']; $def = Num $v['power.default_limit']
     Out-Box ''
-    if ($max -ge 139) {
+    if ($max -ge 139 -and $script:DbState -ne 'ok') {
+        Out-Box "!!! ИТОГ: прошивка разрешает $max Вт, но Dynamic Boost не работает - сейчас максимум $(if ($def) { $def } else { 115 }) Вт."
+        Out-Box '  Почините драйвер Dynamic Boost (шаги выше), перезагрузитесь и нажмите «Проверить мощность» ещё раз.'
+    } elseif ($max -ge 139) {
         Out-Ok "ИТОГ: потолок видеокарты $max Вт - 140 Вт ДОСТУПНЫ."
         Out-Box '  Dynamic Boost добавляет до +25 Вт автоматически в тяжёлых играх, когда процессор не загружен на полную.',
                 '  Поэтому постоянные 140 Вт будут не всегда - это нормальная работа, а не ограничение.'
@@ -1355,6 +1435,12 @@ function Do-Gpu140 {
         else { Out-Dim "  - Ручной лимит ноутбучная видеокарта не принимает - это нормально, мощностью управляет Dynamic Boost. ($("$out".Trim()))" }
     }
     Show-GpuVerdict
+    if ($script:DbState -ne 'ok' -and (Ask-User ("Dynamic Boost не заработал автоматически - без него видеокарта ограничена 115 Вт.`n`n" +
+            "Открыть «Необязательные обновления» Windows и страницу драйверов NVIDIA?`n" +
+            "Порядок действий - в журнале программы («КАК ПОЧИНИТЬ»).") 'Dynamic Boost')) {
+        Start-Process 'ms-settings:windowsupdate-optionalupdates'
+        Start-Process 'https://www.nvidia.com/drivers/'
+    }
     Out-Box '', 'ЧТОБЫ ВИДЕТЬ 140 ВТ В ИГРАХ:',
         '  1. Только от сети, родной блок питания.',
         '  2. Фирменная утилита ноутбука / BIOS / сочетание клавиш - режим Turbo (Performance). Без него EC держит меньше.',
@@ -1396,8 +1482,12 @@ function Do-GpuHolders {
     Out-Box "Состояние: $($ps['pstate']) (P8 = простой), потребление $($ps['power.draw']) Вт"
     if (-not $apps.Count) { Out-Ok 'Ни одна программа не использует RTX 4070 - она может спать.'; return }
     foreach ($a in $apps) { Out-Box "[!] $($a.Name) (PID $($a.Pid)): $($a.Path)" }
-    if ((Get-GraphicsMode) -eq 'dgpu') {
-        Out-Box '', 'Экран сейчас выводит RTX 4070 - в этом режиме она не уснёт никогда. Для батареи включите гибридный режим.'
+    $mode = Get-GraphicsMode
+    if ($mode -eq 'dgpu' -or $mode -eq 'external') {
+        Out-Box '', "[!] Главная причина: $(Get-GraphicsModeText)."
+        Out-Box '    Пока это так, назначать программам встроенную графику бесполезно.'
+        Show-HybridHelp
+        if ($mode -eq 'dgpu' -and (Ask-User 'Открыть Панель управления NVIDIA, чтобы переключить режим дисплея?' 'Режим графики')) { Open-NvidiaPanel }
         return
     }
     $files = @($apps | Where-Object { $_.Path -like '*\*.exe' -and $_.Path -notmatch '\\Windows\\' } | Select-Object -ExpandProperty Path -Unique)
@@ -1459,7 +1549,7 @@ function Do-BatteryOptimize {
     $sel = Show-Options 'Максимальная автономность' ("Настройки действуют только на батарее - от сети ноутбук работает на полную.`n" +
         'Каждое изменение запоминается, вернуть всё можно кнопкой «Откатить настройки батареи».') $items
     if ($null -eq $sel) { return }
-    if (-not $sel.Count) { Out-Box 'Ничего не выбрано.'; return }
+    if (-not $sel.Count) { Out-Box 'Ничего не выбрано - отметьте нужные пункты галочками и нажмите «Применить».'; return }
 
     Head 'МАКСИМАЛЬНАЯ АВТОНОМНОСТЬ'
     $script:Cat = 'battery'
@@ -1510,9 +1600,11 @@ function Do-BatteryOptimize {
         if ($sel['overlay']) { $ch.DcOverlay = $OV_EFF; $ch.AcOverlay = $OV_PERF }
         Install-Agent $ch
     }
-    if ((Get-GraphicsMode) -eq 'dgpu') {
-        Out-Box '', '!!! Сейчас экран выводит RTX 4070 (режим «Только дискретная»). На батарее это главный расход:',
-                '    Панель NVIDIA -> Управление режимом дисплея -> «Автоматический выбор» (Optimus), затем перезагрузка.'
+    $mode = Get-GraphicsMode
+    if ($mode -eq 'dgpu' -or $mode -eq 'external') {
+        Out-Box '', "!!! $(Get-GraphicsModeText)."
+        Out-Box '    Это главный расход батареи - все настройки выше дадут намного меньше, пока это так.'
+        Show-HybridHelp
     }
     Out-Box '', 'Готово. Отключите зарядку - через пару секунд экран станет 60 Гц, а режим Windows - экономичным.',
         'Проверка: «Состояние питания сейчас» и «Журнал автопереключения».', '',
@@ -1740,7 +1832,7 @@ function Do-WinOptimize {
     $sel = Show-Options 'Оптимизация Windows' ("Выберите, что изменить. Всё, кроме удаления приложений, можно вернуть кнопкой «Откатить оптимизацию Windows».`n" +
         'Для батареи - отдельная кнопка «Максимальная автономность».') $items
     if ($null -eq $sel) { return }
-    if (-not $sel.Count) { Out-Box 'Ничего не выбрано.'; return }
+    if (-not $sel.Count) { Out-Box 'Ничего не выбрано - отметьте нужные пункты галочками и нажмите «Применить».'; return }
     if (Ask-User 'Создать точку восстановления перед изменениями? (рекомендуется)' 'Оптимизация Windows') {
         try { Do-Restore } catch { Out-Box "[!] Точка восстановления: $($_.Exception.Message)" }
     }
@@ -1931,10 +2023,24 @@ function Do-Tools {
     Start-Console 'Установка утилит' ($cmds -join '; ')
 }
 
+function Find-Afterburner {
+    $c = @("${env:ProgramFiles(x86)}\MSI Afterburner\MSIAfterburner.exe", "$env:ProgramFiles\MSI Afterburner\MSIAfterburner.exe")
+    foreach ($k in 'HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\Afterburner',
+                   'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\Afterburner') {
+        $loc = (Get-ItemProperty $k -ErrorAction SilentlyContinue).InstallLocation
+        if ($loc) { $c += Join-Path $loc 'MSIAfterburner.exe' }
+    }
+    $c | Where-Object { Test-Path $_ } | Select-Object -First 1
+}
+
 function Do-Afterburner {
-    $p = "${env:ProgramFiles(x86)}\MSI Afterburner\MSIAfterburner.exe"
-    if (Test-Path $p) { Start-Process $p; Out-Box 'MSI Afterburner запущен.' }
-    else { Out-Box 'MSI Afterburner не установлен - кнопка «Установить утилиты».' }
+    $p = Find-Afterburner
+    if ($p) { Start-Process $p; Out-Box 'MSI Afterburner запущен.'; return }
+    if (-not (Ask-User 'MSI Afterburner не установлен. Установить сейчас (winget, официальный пакет) и сразу запустить?' 'MSI Afterburner')) { return }
+    if (-not (Test-Winget)) { return }
+    $p86 = "${env:ProgramFiles(x86)}\MSI Afterburner\MSIAfterburner.exe"
+    Start-Console 'Установка MSI Afterburner' ("winget install -e --id Guru3D.Afterburner --accept-package-agreements --accept-source-agreements; " +
+        "if (Test-Path '$p86') { Start-Process '$p86' } else { Write-Host 'Если установка прошла - запустите Afterburner из меню Пуск.' }")
 }
 
 function Do-OcGuide {
@@ -2095,11 +2201,13 @@ Add-Card '140 Вт: разблокировать' 'Включает Dynamic Boos
 Add-Card 'Проверить мощность' 'Лимиты, Dynamic Boost и режимы - только показывает, ничего не меняет.' { Do-GpuCheck }
 Add-Card 'Замер пиковой мощности' 'Включает слежение за GPU и запоминает пик ватт, пока вы играете.' { Do-GpuPeak }
 Add-Card 'Что держит видеокарту' 'Какие программы не дают RTX 4070 уснуть.' { Do-GpuHolders }
+Add-Card 'Режим графики' 'Гибрид (Optimus) или только RTX 4070: проверка и как переключить.' { Do-HybridHelp }
 
 Add-Page 'battery' 'Батарея' 'Всё, что продлевает работу без зарядки. Действует только на батарее.'
 Add-Card 'Максимальная автономность' '60 Гц, без турбобуста, экономия энергии, сон, устройства - галочками.' { Do-BatteryOptimize } -Primary
 Add-Card 'Состояние питания сейчас' 'Источник, режим Windows, частота экрана и все настройки батареи.' { Do-PowerStatus }
 Add-Card 'Что не даёт видеокарте уснуть' 'Программы, которые будят RTX 4070 и садят батарею.' { Do-GpuHolders }
+Add-Card 'Режим графики' 'Гибридный или только дискретная: главное для батареи. Подскажет, как переключить.' { Do-HybridHelp }
 Add-Card 'Энергоотчёт' '60 секунд наблюдения Windows: что мешает экономии энергии.' { Do-EnergyReport }
 Add-Card 'Расход во сне' 'Sleep Study: сколько заряда ушло во сне и почему.' { Do-SleepStudy }
 Add-Card 'Журнал автопереключения' 'Когда и что переключалось при подключении и отключении зарядки.' { Do-AgentLog }
