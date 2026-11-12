@@ -1,4 +1,4 @@
-﻿# LaptopToolkit v3.2 - Skytech Noir (Ryzen 7 8845HS / DDR5-5600 / RTX 4070 Laptop до 140 Вт)
+﻿# LaptopToolkit v4.0 - Skytech Noir (Ryzen 7 8845HS / DDR5-5600 / RTX 4070 Laptop до 140 Вт)
 # Файл должен быть в UTF-8 с BOM: иначе Windows PowerShell 5.1 ломает кириллицу.
 
 $isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole(
@@ -11,7 +11,7 @@ if (-not $isAdmin) {
 }
 
 $ProgressPreference = 'SilentlyContinue'
-$Version = '3.2'
+$Version = '4.0'
 
 # ---------------- нативные функции ----------------
 # Этот же код сохраняется в ProgramData и используется агентом автопереключения,
@@ -91,6 +91,7 @@ namespace LTK
         // -1 - такой настройки нет в системе
         public static long Read(string scheme, string sub, string setting, bool dc)
         {
+            if (string.IsNullOrEmpty(scheme)) return -1;
             Guid sc = new Guid(scheme), s = new Guid(sub), st = new Guid(setting);
             uint v;
             uint r = dc ? PowerReadDCValueIndex(IntPtr.Zero, ref sc, ref s, ref st, out v)
@@ -99,6 +100,7 @@ namespace LTK
         }
         public static uint Write(string scheme, string sub, string setting, bool dc, uint value)
         {
+            if (string.IsNullOrEmpty(scheme)) return 87;
             Guid sc = new Guid(scheme), s = new Guid(sub), st = new Guid(setting);
             return dc ? PowerWriteDCValueIndex(IntPtr.Zero, ref sc, ref s, ref st, value)
                       : PowerWriteACValueIndex(IntPtr.Zero, ref sc, ref s, ref st, value);
@@ -263,6 +265,7 @@ namespace LTK.UI
         public static Color Accent   = Color.FromArgb(0, 200, 172);
         public static Color Fore     = Color.FromArgb(232, 234, 237);
         public static Color Dim      = Color.FromArgb(148, 155, 167);
+        public static Color Ok = Color.FromArgb(92, 210, 130), Warn = Color.FromArgb(245, 180, 65), Bad = Color.FromArgb(245, 100, 100);
 
         public static Color Mix(Color a, Color b, float t)
         {
@@ -331,37 +334,137 @@ namespace LTK.UI
         }
     }
 
-    // Карточка действия: значок, заголовок, описание.
-    public class Card : Smooth
+
+    // Строка состояния: значок (✓ ! ✕ i …), заголовок, пояснение, значение и кнопка или переключатель справа.
+    public class Row : Smooth
     {
-        public string Title = "", Desc = "", Glyph = "";
-        public bool Primary;
-        public Font TitleFont, DescFont, GlyphFont;
-        public Card() { Cursor = Cursors.Hand; }
+        public string Title = "", Desc = "", Value = "", Action = "";
+        public int State = 4;   // 0 - инфо, 1 - хорошо, 2 - внимание, 3 - плохо, 4 - проверяю, 5 - недоступно
+        public bool Switch, On, Primary;
+        public Font TitleFont, DescFont, ValueFont, ActionFont;
+        public event EventHandler ActionClick;
+        Rectangle act = Rectangle.Empty;
+        bool actHot;
+
+        bool Clickable() { return State != 4 && (Switch ? State != 5 : Action.Length > 0); }
+        protected override void OnMouseMove(MouseEventArgs e)
+        {
+            bool h = act.Contains(e.Location) && Clickable();
+            if (h != actHot) { actHot = h; Cursor = h ? Cursors.Hand : Cursors.Default; Invalidate(); }
+            base.OnMouseMove(e);
+        }
+        protected override void OnMouseLeave(EventArgs e) { actHot = false; Cursor = Cursors.Default; base.OnMouseLeave(e); }
+        protected override void OnMouseClick(MouseEventArgs e)
+        {
+            base.OnMouseClick(e);
+            if (e.Button == MouseButtons.Left && act.Contains(e.Location) && Clickable() && ActionClick != null) ActionClick(this, EventArgs.Empty);
+        }
+        public static Color StateColor(int s)
+        {
+            switch (s) { case 1: return Theme.Ok; case 2: return Theme.Warn; case 3: return Theme.Bad; case 0: return Theme.Accent; default: return Theme.Dim; }
+        }
+
+        static void Mark(Graphics g, Rectangle r, int s, Color c)
+        {
+            float cx = r.X + r.Width / 2f, cy = r.Y + r.Height / 2f, u = r.Width / 28f;
+            using (Pen p = new Pen(c, Math.Max(1.6f, 2.3f * u)))
+            using (SolidBrush b = new SolidBrush(c))
+            {
+                p.StartCap = LineCap.Round; p.EndCap = LineCap.Round; p.LineJoin = LineJoin.Round;
+                switch (s)
+                {
+                    case 1: g.DrawLines(p, new PointF[] { new PointF(cx - 6 * u, cy + 0.5f * u), new PointF(cx - 1.5f * u, cy + 5 * u), new PointF(cx + 6.5f * u, cy - 4.5f * u) }); break;
+                    case 2: g.DrawLine(p, cx, cy - 6 * u, cx, cy + 1.5f * u); g.FillEllipse(b, cx - 1.7f * u, cy + 4 * u, 3.4f * u, 3.4f * u); break;
+                    case 3: g.DrawLine(p, cx - 5 * u, cy - 5 * u, cx + 5 * u, cy + 5 * u); g.DrawLine(p, cx + 5 * u, cy - 5 * u, cx - 5 * u, cy + 5 * u); break;
+                    case 0: g.DrawLine(p, cx, cy - 1 * u, cx, cy + 6 * u); g.FillEllipse(b, cx - 1.7f * u, cy - 7.5f * u, 3.4f * u, 3.4f * u); break;
+                    case 5: g.DrawLine(p, cx - 5 * u, cy, cx + 5 * u, cy); break;
+                    default: for (int i = -1; i <= 1; i++) g.FillEllipse(b, cx + i * 6 * u - 1.7f * u, cy - 1.7f * u, 3.4f * u, 3.4f * u); break;
+                }
+            }
+        }
+
+        void DrawSwitch(Graphics g, Rectangle r, Color back)
+        {
+            bool dis = State == 4;
+            Color track = On ? Theme.Accent : Theme.Mix(back, Theme.Fore, 0.08f);
+            if (actHot) track = On ? Theme.Mix(Theme.Accent, Color.White, 0.15f) : Theme.Mix(back, Theme.Fore, 0.16f);
+            if (dis) track = Theme.Mix(track, back, 0.6f);
+            Theme.FillRound(g, r, r.Height / 2f, track, On ? Color.Empty : Theme.Mix(back, Theme.Fore, 0.35f));
+            int k = r.Height - Theme.S(10);
+            int kx = On ? r.Right - Theme.S(5) - k : r.X + Theme.S(5);
+            using (SolidBrush b = new SolidBrush(On ? Theme.Bg : Theme.Mix(Theme.Dim, Theme.Fore, 0.4f)))
+                g.FillEllipse(b, kx, r.Y + Theme.S(5), k, k);
+        }
+
         protected override void OnPaint(PaintEventArgs e)
         {
             Graphics g = Begin(e);
-            Color back = Primary ? Theme.Mix(Theme.Surface, Theme.Accent, 0.10f) : Theme.Surface;
-            if (Hot) back = Theme.Mix(back, Theme.Accent, 0.08f);
-            if (Pressed) back = Theme.Mix(back, Theme.Accent, 0.18f);
-            Color line = Hot ? Theme.Accent : (Primary ? Theme.Mix(Theme.Border, Theme.Accent, 0.55f) : Theme.Border);
+            Color back = Primary ? Theme.Mix(Theme.Surface, Theme.Accent, 0.09f) : Theme.Surface;
+            Color line = Primary ? Theme.Mix(Theme.Border, Theme.Accent, 0.5f) : Theme.Border;
             Theme.FillRound(g, new RectangleF(0.5f, 0.5f, Width - 1.5f, Height - 1.5f), Theme.S(10), back, line);
 
-            int pad = Theme.S(14), ic = Theme.S(40);
-            Rectangle icr = new Rectangle(pad, pad, ic, ic);
-            Theme.FillRound(g, icr, Theme.S(10), Primary ? Theme.Accent : Theme.Mix(Theme.Surface2, Theme.Accent, 0.16f), Color.Empty);
-            Draw(g, Glyph, GlyphFont, icr, Primary ? Theme.Bg : Theme.Accent,
-                 TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.SingleLine);
+            int pad = Theme.S(16);
+            Color sc = StateColor(State);
+            int d = Theme.S(Primary ? 34 : 28);
+            Rectangle ic = new Rectangle(pad, (Height - d) / 2, d, d);
+            using (SolidBrush b = new SolidBrush(Theme.Mix(back, sc, 0.22f))) g.FillEllipse(b, ic);
+            Mark(g, ic, State, sc);
 
-            int tx = pad + ic + Theme.S(12), tw = Width - tx - pad;
-            int th = TitleFont != null ? TitleFont.Height : Theme.S(20);
-            Rectangle tr = new Rectangle(tx, pad, tw, th);
-            Draw(g, Title, TitleFont, tr, Theme.Fore, TextFormatFlags.SingleLine | TextFormatFlags.EndEllipsis);
-            Rectangle dr = new Rectangle(tx, tr.Bottom + Theme.S(3), tw, Height - tr.Bottom - Theme.S(3) - Theme.S(10));
-            Draw(g, Desc, DescFont, dr, Theme.Dim, TextFormatFlags.WordBreak | TextFormatFlags.EndEllipsis | TextFormatFlags.TextBoxControl);
+            Font af = ActionFont ?? Font;
+            int right = Width - pad;
+            act = Rectangle.Empty;
+            if (Switch && State != 5)
+            {
+                int sw = Theme.S(48), sh = Theme.S(26);
+                act = new Rectangle(right - sw, (Height - sh) / 2, sw, sh);
+                DrawSwitch(g, act, back);
+                right = act.X - Theme.S(14);
+            }
+            else if (Action.Length > 0)
+            {
+                Size ts = TextRenderer.MeasureText(g, Action, af, new Size(1000, 100), TextFormatFlags.SingleLine | TextFormatFlags.NoPadding);
+                int bw = ts.Width + Theme.S(30), bh = Theme.S(34);
+                act = new Rectangle(right - bw, (Height - bh) / 2, bw, bh);
+                bool dis = State == 4;
+                Color f, l;
+                if (Primary) { f = actHot ? Theme.Mix(Theme.Accent, Color.White, 0.15f) : Theme.Accent; l = Color.Empty; }
+                else { f = Theme.Mix(back, Theme.Fore, actHot ? 0.13f : 0.06f); l = Theme.Mix(back, Theme.Accent, actHot ? 0.9f : 0.45f); }
+                if (dis) { f = Theme.Mix(f, back, 0.6f); l = Theme.Mix(back, Theme.Fore, 0.15f); }
+                Theme.FillRound(g, act, Theme.S(8), f, l);
+                Color tc = Primary ? Theme.Bg : Theme.Fore;
+                if (dis) tc = Theme.Dim;
+                Draw(g, Action, af, act, tc, TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.SingleLine);
+                right = act.X - Theme.S(14);
+            }
+
+            int tx = ic.Right + Theme.S(14);
+            if (Value.Length > 0 && ValueFont != null)
+            {
+                int maxw = Math.Max(Theme.S(60), (int)((right - tx) * 0.4));
+                Size vs = TextRenderer.MeasureText(g, Value, ValueFont, new Size(2000, 100), TextFormatFlags.SingleLine | TextFormatFlags.NoPadding);
+                int vw = Math.Min(maxw, vs.Width + Theme.S(2));
+                Rectangle vr = new Rectangle(right - vw, 0, vw, Height);
+                Color vc = (State == 2 || State == 3) ? sc : Theme.Mix(Theme.Dim, Theme.Fore, 0.5f);
+                Draw(g, Value, ValueFont, vr, vc, TextFormatFlags.VerticalCenter | TextFormatFlags.Right | TextFormatFlags.SingleLine | TextFormatFlags.EndEllipsis);
+                right = vr.X - Theme.S(14);
+            }
+
+            int tw = Math.Max(10, right - tx);
+            int th = TitleFont != null ? TitleFont.Height : Theme.S(18);
+            int dh = 0;
+            if (Desc.Length > 0 && DescFont != null)
+            {
+                Size ds = TextRenderer.MeasureText(g, Desc, DescFont, new Size(tw, 1000), TextFormatFlags.WordBreak | TextFormatFlags.NoPadding | TextFormatFlags.TextBoxControl);
+                dh = Math.Min(ds.Height, Math.Max(DescFont.Height, Height - th - Theme.S(18)));
+            }
+            int total = th + (dh > 0 ? Theme.S(3) + dh : 0);
+            int ty = (Height - total) / 2;
+            Draw(g, Title, TitleFont, new Rectangle(tx, ty, tw, th), Theme.Fore, TextFormatFlags.SingleLine | TextFormatFlags.EndEllipsis);
+            if (dh > 0)
+                Draw(g, Desc, DescFont, new Rectangle(tx, ty + th + Theme.S(3), tw, dh), Theme.Dim,
+                     TextFormatFlags.WordBreak | TextFormatFlags.EndEllipsis | TextFormatFlags.TextBoxControl);
         }
     }
-
     // Плитка монитора: заголовок, крупное значение, подпись, полоска.
     public class Tile : Smooth
     {
@@ -404,7 +507,7 @@ namespace LTK.UI
     public class NavItem : Smooth
     {
         public string Glyph = "";
-        public bool Selected;
+        public bool Selected, Dot;
         public Font GlyphFont;
         public NavItem() { Cursor = Cursors.Hand; }
         protected override void OnPaint(PaintEventArgs e)
@@ -420,6 +523,11 @@ namespace LTK.UI
             Rectangle gr = new Rectangle(Theme.S(12), 0, Theme.S(26), Height);
             Draw(g, Glyph, GlyphFont, gr, Selected ? Theme.Accent : Theme.Dim,
                  TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.SingleLine);
+            if (Dot)
+            {
+                int dd = Theme.S(8);
+                using (SolidBrush b = new SolidBrush(Theme.Accent)) g.FillEllipse(b, Width - Theme.S(18), (Height - dd) / 2f, dd, dd);
+            }
             Rectangle tr = new Rectangle(Theme.S(46), 0, Width - Theme.S(52), Height);
             Draw(g, base.Text, Font, tr, Selected ? Theme.Fore : Theme.Mix(Theme.Dim, Theme.Fore, 0.35f),
                  TextFormatFlags.VerticalCenter | TextFormatFlags.SingleLine | TextFormatFlags.EndEllipsis);
@@ -535,6 +643,8 @@ $fPage    = New-Font $semi 17
 $fValue   = New-Font $semi 17
 $fTileCap = New-Font $semi 8
 $fMono    = New-Font 'Consolas' 10
+$fTitleRow = New-Font $semi 12
+$fSemiSm  = New-Font $semi 9
 $fIcon    = if ($HasIcons) { New-Font 'Segoe MDL2 Assets' 14 } else { New-Font 'Segoe UI' 13 }
 $fIconNav = if ($HasIcons) { New-Font 'Segoe MDL2 Assets' 12 } else { New-Font 'Segoe UI' 11 }
 
@@ -612,11 +722,11 @@ $bottom.Controls.Add($statusLbl)
 
 # --- основная область ---
 $main = New-Object Windows.Forms.Panel
-$main.Dock = 'Fill'; $main.BackColor = $bg; $main.Padding = Pad 20 16 20 16
+$main.Dock = 'Fill'; $main.BackColor = $bg; $main.Padding = Pad 22 16 8 0
 
 $tiles = New-Object Windows.Forms.TableLayoutPanel
-$tiles.Dock = 'Top'; $tiles.Height = Px 112; $tiles.ColumnCount = 4; $tiles.RowCount = 1; $tiles.BackColor = $bg
-$tiles.Margin = Pad 0 0 0 0; $tiles.Padding = Pad 0 0 0 0
+$tiles.Dock = 'Top'; $tiles.Height = Px 104; $tiles.ColumnCount = 4; $tiles.RowCount = 1; $tiles.BackColor = $bg
+$tiles.Margin = Pad 0 0 0 0; $tiles.Padding = Pad 0 0 14 0
 for ($i = 0; $i -lt 4; $i++) { [void]$tiles.ColumnStyles.Add((New-Object Windows.Forms.ColumnStyle('Percent', 25))) }
 [void]$tiles.RowStyles.Add((New-Object Windows.Forms.RowStyle('Percent', 100)))
 function New-Tile([string]$title, [int]$col) {
@@ -634,63 +744,58 @@ $tileGpu = New-Tile 'ВИДЕОКАРТА' 3
 $tileGpu.Clickable = $true; $tileGpu.Cursor = [Windows.Forms.Cursors]::Hand
 $tips.SetToolTip($tileGpu, 'Нажмите, чтобы включить/выключить слежение за RTX 4070. Опрос будит видеокарту - на батарее выключается сам.')
 
-$pageHead = New-Object Windows.Forms.Panel
-$pageHead.Dock = 'Top'; $pageHead.Height = Px 74; $pageHead.BackColor = $bg
-$pageTitle = New-Object Windows.Forms.Label
-$pageTitle.Font = $fPage; $pageTitle.ForeColor = $fg; $pageTitle.AutoSize = $true
-$pageTitle.Location = New-Object Drawing.Point(0, (Px 16))
-$pageDesc = New-Object Windows.Forms.Label
-$pageDesc.Font = $fUi; $pageDesc.ForeColor = $cDim; $pageDesc.AutoSize = $true
-$pageDesc.Location = New-Object Drawing.Point((Px 2), (Px 48))
-$pageHead.Controls.AddRange(@($pageTitle, $pageDesc))
-
-$cards = New-Object Windows.Forms.FlowLayoutPanel
-$cards.Dock = 'Top'; $cards.Height = Px 100; $cards.BackColor = $bg
-$cards.WrapContents = $true; $cards.Margin = Pad 0 0 0 0; $cards.Padding = Pad 0 0 0 0
-
-$logCard = New-Object LTK.UI.RoundPanel
-$logCard.Dock = 'Fill'; $logCard.Padding = Pad 16 8 6 10
-$logHead = New-Object Windows.Forms.Panel
-$logHead.Dock = 'Top'; $logHead.Height = Px 38; $logHead.BackColor = $panel
-$logTitle = New-Object Windows.Forms.Label
-$logTitle.Text = 'Журнал'; $logTitle.Font = $fSemi; $logTitle.ForeColor = $fg; $logTitle.AutoSize = $true
-$logTitle.Location = New-Object Drawing.Point(0, (Px 8))
-$logTools = New-Object Windows.Forms.FlowLayoutPanel
-$logTools.Dock = 'Right'; $logTools.Width = Px 420; $logTools.FlowDirection = 'RightToLeft'; $logTools.WrapContents = $false
-$logTools.BackColor = $panel; $logTools.Padding = Pad 0 3 8 0
-function New-Chip([string]$text, [double]$w, [switch]$Primary) {
-    $c = New-Object LTK.UI.Chip
-    $c.Text = $text; $c.Size = Sz $w 30; $c.Font = $fSmall; $c.Primary = [bool]$Primary; $c.Margin = Pad 6 0 0 0
-    $c
-}
-$chipClear = New-Chip 'Очистить' 96
-$chipFolder = New-Chip 'Папка отчётов' 124
-$chipSave = New-Chip 'Сохранить отчёт' 140
-$logTools.Controls.AddRange(@($chipClear, $chipFolder, $chipSave))
-$logHead.Controls.AddRange(@($logTitle, $logTools))
-
-$box = New-Object Windows.Forms.RichTextBox
-$box.ReadOnly = $true; $box.ScrollBars = 'Vertical'; $box.DetectUrls = $false
-$box.Dock = 'Fill'; $box.BackColor = $panel; $box.ForeColor = $fg
-$box.Font = $fMono
-$box.BorderStyle = 'None'
-$logCard.Controls.Add($box)
-$logCard.Controls.Add($logHead)
-
 $gap1 = New-Object Windows.Forms.Panel
-$gap1.Dock = 'Top'; $gap1.Height = Px 6; $gap1.BackColor = $bg
+$gap1.Dock = 'Top'; $gap1.Height = Px 4; $gap1.BackColor = $bg
 
-# порядок добавления важен для Dock: последний добавленный прижимается первым
-$main.Controls.Add($logCard)
+$pageHost = New-Object Windows.Forms.Panel
+$pageHost.Dock = 'Fill'; $pageHost.BackColor = $bg
+
+$main.Controls.Add($pageHost)
 $main.Controls.Add($gap1)
-$main.Controls.Add($cards)
-$main.Controls.Add($pageHead)
 $main.Controls.Add($tiles)
 
 $form.Controls.Add($main)
 $form.Controls.Add($nav)
 $form.Controls.Add($bottom)
 $form.Controls.Add($header)
+
+function New-Chip([string]$text, [double]$w, [switch]$Primary) {
+    $c = New-Object LTK.UI.Chip
+    $c.Text = $text; $c.Size = Sz $w 30; $c.Font = $fSmall; $c.Primary = [bool]$Primary; $c.Margin = Pad 6 0 0 0
+    $c
+}
+
+# Журнал - отдельная страница: подробный текст всех действий.
+$logPage = New-Object Windows.Forms.Panel
+$logPage.Dock = 'Fill'; $logPage.BackColor = $bg; $logPage.Visible = $false; $logPage.Padding = Pad 0 0 14 14
+$logTop = New-Object Windows.Forms.Panel
+$logTop.Dock = 'Top'; $logTop.Height = Px 84; $logTop.BackColor = $bg
+$logTitle = New-Object Windows.Forms.Label
+$logTitle.Text = 'Журнал'; $logTitle.Font = $fPage; $logTitle.ForeColor = $fg; $logTitle.AutoSize = $true
+$logTitle.Location = New-Object Drawing.Point(0, (Px 12))
+$logDesc = New-Object Windows.Forms.Label
+$logDesc.Text = 'Подробности всех действий и проверок. Отсюда же сохраняется отчёт.'
+$logDesc.Font = $fUi; $logDesc.ForeColor = $cDim; $logDesc.AutoSize = $true
+$logDesc.Location = New-Object Drawing.Point((Px 2), (Px 46))
+$logTools = New-Object Windows.Forms.FlowLayoutPanel
+$logTools.Dock = 'Right'; $logTools.Width = Px 420; $logTools.FlowDirection = 'RightToLeft'; $logTools.WrapContents = $false
+$logTools.BackColor = $bg; $logTools.Padding = Pad 0 40 0 0
+$chipClear = New-Chip 'Очистить' 96
+$chipFolder = New-Chip 'Папка отчётов' 124
+$chipSave = New-Chip 'Сохранить отчёт' 140 -Primary
+$logTools.Controls.AddRange(@($chipClear, $chipFolder, $chipSave))
+$logTop.Controls.AddRange(@($logTitle, $logDesc, $logTools))
+$logCard = New-Object LTK.UI.RoundPanel
+$logCard.Dock = 'Fill'; $logCard.Padding = Pad 16 12 6 10
+$box = New-Object Windows.Forms.RichTextBox
+$box.ReadOnly = $true; $box.ScrollBars = 'Vertical'; $box.DetectUrls = $false
+$box.Dock = 'Fill'; $box.BackColor = $panel; $box.ForeColor = $fg
+$box.Font = $fMono
+$box.BorderStyle = 'None'
+$logCard.Controls.Add($box)
+$logPage.Controls.Add($logCard)
+$logPage.Controls.Add($logTop)
+$pageHost.Controls.Add($logPage)
 
 # ---------------- помощники ----------------
 function Out-Box([object[]]$Lines, $Color = $null) {
@@ -710,6 +815,9 @@ function Out-Box([object[]]$Lines, $Color = $null) {
     }
     $box.SelectionStart = $box.TextLength
     $box.ScrollToCaret()
+    if ($script:PageKey -ne 'log' -and $script:LogNav -and -not $script:LogNav.Dot) {
+        $script:LogNav.Dot = $true; $script:LogNav.Invalidate()
+    }
     [Windows.Forms.Application]::DoEvents()
 }
 function Head([string]$t) { Out-Box @('', "■ $t") $accent }
@@ -721,20 +829,27 @@ function Ask-User([string]$msg, [string]$title = 'Подтверждение') {
     $r = [Windows.Forms.MessageBox]::Show($form, $msg, $title, 'YesNo', 'Question')
     return ($r -eq [Windows.Forms.DialogResult]::Yes)
 }
+function Show-Info([string]$msg, [string]$title = 'Laptop Toolkit') {
+    [void][Windows.Forms.MessageBox]::Show($form, $msg, $title, 'OK', 'Information')
+}
+function Set-Status([string]$text, $color = $null) {
+    $statusLbl.ForeColor = $(if ($color) { $color } else { $cDim })
+    $statusLbl.Text = $text
+}
 
 function Invoke-Safe([string]$name, [scriptblock]$action) {
-    if ($script:Busy) { $statusLbl.Text = "Подождите: ещё выполняется «$($script:BusyName)»"; return }
+    if ($script:Busy) { Set-Status "Подождите: ещё выполняется «$($script:BusyName)»" $cWarn; return }
     $script:Busy = $true; $script:BusyName = $name
-    $statusLbl.ForeColor = $accent
-    $statusLbl.Text = "● Выполняется: $name..."
+    Set-Status "● Выполняется: $name..." $accent
     $form.Cursor = [Windows.Forms.Cursors]::WaitCursor
+    $failed = $false
     try { & $action }
-    catch { Out-Box "ОШИБКА [$name]: $($_.Exception.Message)" }
+    catch { $failed = $true; Out-Box "ОШИБКА [$name]: $($_.Exception.Message)" }
     finally {
         $script:Busy = $false; $script:Cat = $null
         $form.Cursor = [Windows.Forms.Cursors]::Default
-        $statusLbl.ForeColor = $cDim
-        $statusLbl.Text = "Готово: $name"
+        if ($failed) { Set-Status "Ошибка: $name - подробности в «Журнале»" $cErr }
+        elseif ($statusLbl.Text -like '● Выполняется*') { Set-Status "Готово: $name" }
     }
 }
 
@@ -744,11 +859,13 @@ function Start-Console([string]$title, [string]$command) {
     $enc = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($cmd))
     Start-Process powershell.exe -ArgumentList "-NoProfile -ExecutionPolicy Bypass -NoExit -EncodedCommand $enc"
     Out-Box "Открыто отдельное окно: $title"
+    Set-Status "Открыто отдельное окно: $title"
 }
 
 function Test-Winget {
     if (Get-Command winget -ErrorAction SilentlyContinue) { return $true }
     Out-Box 'winget не найден. Установите «Установщик приложений» (App Installer) из Microsoft Store.'
+    Show-Info 'Для скачивания программ нужен «Установщик приложений» (winget) из Microsoft Store. Сейчас откроется его страница.'
     Start-Process 'ms-windows-store://pdp/?productid=9NBLGGH4NNS1'
     return $false
 }
@@ -823,7 +940,7 @@ function Set-Pow([string]$sub, [string]$setting, [uint32]$value, [string]$label,
 }
 
 function Undo-Journal([string]$cat) {
-    $entries = @($script:Journal | Where-Object { $_.Cat -eq $cat })
+    $entries = @($script:Journal | Where-Object { $_.Cat -like $cat })
     if (-not $entries.Count) { return 0 }
     $n = 0
     for ($i = $entries.Count - 1; $i -ge 0; $i--) {
@@ -891,7 +1008,7 @@ function Get-AgentConfig {
     try { return (Get-Content $p -Raw -Encoding UTF8 | ConvertFrom-Json) } catch { return $null }
 }
 function Test-AgentTask {
-    try { return [bool](Get-ScheduledTask -TaskName 'PowerAgent' -TaskPath '\LaptopToolkit\' -ErrorAction Stop) } catch { return $false }
+    Cached 'agenttask' 5 { try { [bool](Get-ScheduledTask -TaskName 'PowerAgent' -TaskPath '\LaptopToolkit\' -ErrorAction Stop) } catch { $false } }
 }
 
 function Install-Agent([hashtable]$changes) {
@@ -954,101 +1071,19 @@ function Install-Agent([hashtable]$changes) {
         return
     }
     Start-ScheduledTask -TaskName 'PowerAgent' -TaskPath '\LaptopToolkit\' -ErrorAction SilentlyContinue
+    $script:Cache.Remove('agenttask')
     $script:AgentOn = $true
     Out-Ok '  + Автопереключение при подключении/отключении зарядки включено (Планировщик: \LaptopToolkit\PowerAgent)'
 }
 
 function Uninstall-Agent {
     Unregister-ScheduledTask -TaskName 'PowerAgent' -TaskPath '\LaptopToolkit\' -Confirm:$false -ErrorAction SilentlyContinue
+    $script:Cache.Remove('agenttask')
     $script:AgentOn = $false
     foreach ($f in 'PowerAgent.ps1', 'agent.json', 'LTK.cs') { Remove-Item (Join-Path $DataDir $f) -Force -ErrorAction SilentlyContinue }
     $rates = @([LTK.Disp]::Rates())
     if ($rates.Count) { [void][LTK.Disp]::Set($rates[-1]) }
     Out-Ok '  + Автопереключение выключено, частота экрана возвращена на максимум.'
-}
-
-# ---------------- окно с галочками ----------------
-# $items: @{ Group; Key; Text; Hint; On }. Возвращает hashtable выбранных ключей или $null при отмене.
-function Show-Options([string]$title, [string]$intro, [object[]]$items, [string]$okText = 'Применить') {
-    $dlg = New-Object Windows.Forms.Form
-    $dlg.Text = $title; $dlg.StartPosition = 'CenterParent'; $dlg.AutoScaleMode = 'None'
-    $dlg.Size = Sz 760 780; $dlg.MinimumSize = Sz 560 440
-    $dlg.BackColor = $bg; $dlg.ForeColor = $fg; $dlg.ShowInTaskbar = $false; $dlg.MinimizeBox = $false
-    $dlg.Font = $fUi
-    $dlg.Add_HandleCreated({ param($s, $e) [LTK.UI.Theme]::DarkTitle($s.Handle, $panel) })
-
-    $head = New-Object Windows.Forms.Panel
-    $head.Dock = 'Top'; $head.Height = Px 92; $head.BackColor = $panel
-    $ht = New-Object Windows.Forms.Label
-    $ht.Text = $title; $ht.Font = $fTitle; $ht.ForeColor = $fg; $ht.AutoSize = $true
-    $ht.Location = New-Object Drawing.Point((Px 20), (Px 12))
-    $hi = New-Object Windows.Forms.Label
-    $hi.Text = $intro; $hi.ForeColor = $cDim; $hi.Font = $fSmall
-    $hi.Location = New-Object Drawing.Point((Px 21), (Px 46)); $hi.Size = Sz 700 42
-    $head.Controls.AddRange(@($ht, $hi))
-
-    $flow = New-Object Windows.Forms.FlowLayoutPanel
-    $flow.Dock = 'Fill'; $flow.FlowDirection = 'TopDown'; $flow.WrapContents = $false; $flow.AutoScroll = $true
-    $flow.Padding = Pad 20 4 12 14; $flow.BackColor = $bg
-    $w = Px 670
-    $script:OptBoxes = New-Object Collections.ArrayList
-    $grp = $null
-    foreach ($it in $items) {
-        if ($it.Group -and $it.Group -ne $grp) {
-            $grp = $it.Group
-            $gl = New-Object Windows.Forms.Label
-            $gl.Text = $grp.ToUpper(); $gl.ForeColor = $accent; $gl.AutoSize = $true
-            $gl.Font = $fTileCap
-            $gl.Margin = Pad 0 16 0 2
-            $flow.Controls.Add($gl)
-        }
-        $cb = New-Object Windows.Forms.CheckBox
-        $cb.Text = $it.Text; $cb.Checked = [bool]$it.On; $cb.Tag = $it.Key
-        $cb.Font = $fSemi; $cb.ForeColor = $fg; $cb.Cursor = [Windows.Forms.Cursors]::Hand
-        # AutoSize не переносит длинные строки - высоту считаем сами
-        $txtSize = [Windows.Forms.TextRenderer]::MeasureText($it.Text, $fSemi, (New-Object Drawing.Size(($w - (Px 30)), 0)), [Windows.Forms.TextFormatFlags]::WordBreak)
-        $cb.AutoSize = $false; $cb.Width = $w; $cb.Height = $txtSize.Height + (Px 6)
-        $cb.CheckAlign = 'TopLeft'; $cb.TextAlign = 'TopLeft'
-        $cb.FlatStyle = 'Flat'
-        $cb.FlatAppearance.BorderColor = $accent
-        $cb.FlatAppearance.CheckedBackColor = [LTK.UI.Theme]::Mix($bg, $accent, 0.35)
-        $cb.FlatAppearance.MouseOverBackColor = $panel2
-        $cb.Margin = Pad 0 8 0 0
-        $flow.Controls.Add($cb)
-        [void]$script:OptBoxes.Add($cb)
-        if ($it.Hint) {
-            $h = New-Object Windows.Forms.Label
-            $h.Text = $it.Hint; $h.ForeColor = $cDim; $h.AutoSize = $true; $h.Font = $fSmall
-            $h.MaximumSize = New-Object Drawing.Size(($w - (Px 22)), 0)
-            $h.Margin = Pad 20 1 0 2
-            $flow.Controls.Add($h)
-        }
-    }
-
-    $bar = New-Object Windows.Forms.FlowLayoutPanel
-    $bar.Dock = 'Bottom'; $bar.Height = Px 60; $bar.BackColor = $panel
-    $bar.FlowDirection = 'RightToLeft'; $bar.Padding = Pad 12 13 10 0
-    $ok = New-Chip $okText 150 -Primary; $ok.Height = Px 34; $ok.Font = $fSemi
-    $ok.DialogResult = [Windows.Forms.DialogResult]::OK
-    $cancel = New-Chip 'Отмена' 110; $cancel.Height = Px 34
-    $cancel.DialogResult = [Windows.Forms.DialogResult]::Cancel
-    $all = New-Chip 'Отметить всё' 130; $all.Height = Px 34
-    $all.Add_Click({ foreach ($c in $script:OptBoxes) { $c.Checked = $true } })
-    $none = New-Chip 'Снять всё' 110; $none.Height = Px 34
-    $none.Add_Click({ foreach ($c in $script:OptBoxes) { $c.Checked = $false } })
-    $bar.Controls.AddRange(@($ok, $cancel, $none, $all))
-
-    $dlg.Controls.Add($flow); $dlg.Controls.Add($head); $dlg.Controls.Add($bar)
-    $dlg.AcceptButton = $ok; $dlg.CancelButton = $cancel
-    $dlg.Add_Shown({ param($s, $e) [LTK.UI.Theme]::DarkScroll($flow) })
-    $res = $dlg.ShowDialog($form)
-    $sel = $null
-    if ($res -eq [Windows.Forms.DialogResult]::OK) {
-        $sel = @{}
-        foreach ($c in $script:OptBoxes) { if ($c.Checked) { $sel[[string]$c.Tag] = $true } }
-    }
-    $dlg.Dispose()
-    return $sel
 }
 
 # ---------------- ДИАГНОСТИКА ----------------
@@ -1109,7 +1144,7 @@ function Do-Gpu {
     $hags = (Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\GraphicsDrivers' -ErrorAction SilentlyContinue).HwSchMode
     Out-Box "Аппаратное планирование GPU (HAGS): $(if ($hags -eq 2) {'вкл'} else {'выкл'})"
     Out-Box "Режим графики: $(Get-GraphicsModeText)"
-    if (-not $Smi) { Out-Box '[!] nvidia-smi не найден - установите драйвер NVIDIA (кнопка «Драйверы NVIDIA / AMD»).'; return }
+    if (-not $Smi) { Out-Box '[!] nvidia-smi не найден - установите драйвер NVIDIA (страница «Оптимизация Windows» -> «Драйверы NVIDIA и AMD»).'; return }
     $fields = 'name', 'driver_version', 'pstate', 'temperature.gpu', 'utilization.gpu', 'power.draw',
               'enforced.power.limit', 'power.max_limit', 'clocks.gr', 'clocks.max.gr', 'clocks.mem', 'memory.used', 'memory.total'
     $labels = 'Модель', 'Драйвер', 'P-state (P8 = спит)', 'Температура, °C', 'Загрузка, %', 'Потребление, Вт',
@@ -1166,7 +1201,7 @@ function Do-Drivers {
     $bad = @(Get-CimInstance Win32_PnPEntity | Where-Object { $_.ConfigManagerErrorCode -ne 0 })
     if ($bad.Count -eq 0) { Out-Ok 'Проблемных устройств нет.'; return }
     foreach ($d in $bad) { Out-Box "[!] $($d.Name) - код ошибки $($d.ConfigManagerErrorCode) ($($d.PNPDeviceID))" }
-    Out-Box 'Код 28 = нет драйвера, 22 = отключено, 10/43 = сбой. Решение - кнопка «Драйверы NVIDIA / AMD».'
+    Out-Box 'Код 28 = нет драйвера, 22 = отключено, 10/43 = сбой. Решение - страница «Оптимизация Windows» -> «Драйверы NVIDIA и AMD».'
 }
 
 function Do-Events {
@@ -1260,14 +1295,6 @@ function Show-HybridHelp {
         '  Для игр от сети можно снова включить «Только дискретная» - это +5..15% FPS.'
 }
 
-function Do-HybridHelp {
-    Head 'РЕЖИМ ГРАФИКИ'
-    $mode = Get-GraphicsMode
-    Out-Box "Сейчас: $(Get-GraphicsModeText)"
-    if ($mode -eq 'hybrid') { Out-Ok 'Всё правильно: на батарее RTX 4070 спит, пока не запущена игра.'; return }
-    Show-HybridHelp
-    if ($mode -ne 'external' -and (Ask-User 'Открыть Панель управления NVIDIA, чтобы переключить режим дисплея?' 'Режим графики')) { Open-NvidiaPanel }
-}
 
 function Get-Nvpcf {
     @(Get-PnpDevice -ErrorAction SilentlyContinue | Where-Object {
@@ -1319,7 +1346,7 @@ function Show-DbHelp {
 
 function Show-GpuPower([switch]$Fix) {
     Head 'МОЩНОСТЬ ВИДЕОКАРТЫ (цель: 140 Вт = 115 Вт база + 25 Вт Dynamic Boost)'
-    if (-not $Smi) { Out-Box '!!! Драйвер NVIDIA не найден (нет nvidia-smi). Кнопка «Драйверы NVIDIA / AMD».'; return }
+    if (-not $Smi) { Out-Box '!!! Драйвер NVIDIA не найден (нет nvidia-smi). Страница «Оптимизация Windows» -> «Драйверы NVIDIA и AMD».'; return }
     $v = Get-SmiValues @('name', 'driver_version', 'power.draw', 'enforced.power.limit', 'power.default_limit', 'power.max_limit', 'pstate')
     Out-Box @(
         "  Видеокарта:          $($v['name']), драйвер $($v['driver_version'])",
@@ -1353,12 +1380,12 @@ function Show-GpuPower([switch]$Fix) {
     }
     switch -Wildcard ($script:DbState) {
         'ok'       { Out-Ok "  + Dynamic Boost: работает (+25 Вт в играх)" }
-        'disabled' { Out-Box '  [!] Dynamic Boost отключён в Диспетчере устройств - кнопка «140 Вт: разблокировать» включит его.' }
+        'disabled' { Out-Box '  [!] Dynamic Boost отключён в Диспетчере устройств - кнопка «Включить» на странице «Видеокарта» включит его.' }
         'missing'  { Out-Box '  [!] Dynamic Boost: устройство «NVIDIA Platform Controllers and Framework» не найдено - видеокарта ограничена ~115 Вт.'; Show-DbHelp }
         default {
             $why = if ($script:DbState -eq 'nodriver') { 'у устройства нет драйвера' } else { "ошибка устройства ($($script:DbState))" }
             Out-Box "  [!] Dynamic Boost НЕ РАБОТАЕТ: $why. Пока это так, видеокарта не поднимется выше 115 Вт."
-            if (-not $Fix) { Out-Box '      Кнопка «140 Вт: разблокировать» попробует установить драйвер сама.' }
+            if (-not $Fix) { Out-Box '      Кнопка «Исправить» на странице «Видеокарта» попробует установить драйвер сама.' }
             Show-DbHelp
         }
     }
@@ -1371,7 +1398,7 @@ function Show-GpuPower([switch]$Fix) {
                 Set-Service $svc.Name -StartupType Automatic -ErrorAction SilentlyContinue
                 Start-Service $svc.Name -ErrorAction SilentlyContinue
                 Out-Ok '  + Служба NVIDIA Display Container была выключена - включил и запустил.'
-            } else { Out-Box "  [!] Служба NVIDIA Display Container: $($svc.Status) / $($svc.StartType) - должна работать (кнопка «140 Вт: разблокировать»)." }
+            } else { Out-Box "  [!] Служба NVIDIA Display Container: $($svc.Status) / $($svc.StartType) - должна работать (страница «Видеокарта» -> «Служба NVIDIA»)." }
         } else { Out-Ok '  + Служба NVIDIA Display Container работает' }
     }
 
@@ -1411,14 +1438,7 @@ function Show-GpuVerdict {
 function Do-GpuCheck { Show-GpuPower; Show-GpuVerdict }
 
 function Do-Gpu140 {
-    if (-not $Smi) { Head 'ВИДЕОКАРТА 140 ВТ'; Out-Box '!!! Драйвер NVIDIA не найден (нет nvidia-smi). Кнопка «Драйверы NVIDIA / AMD».'; return }
-    $msg = "RTX 4070 Laptop в Skytech Noir рассчитана на 140 Вт = 115 Вт база + 25 Вт Dynamic Boost.`n`n" +
-           "Программа:`n- включит Dynamic Boost (NVIDIA Platform Controllers), если он отключён`n" +
-           "- включит службу NVIDIA, если её выключил «оптимизатор»`n" +
-           "- поставит режим Windows «Максимальная производительность» от сети`n  (и будет возвращать его при каждом подключении зарядки)`n" +
-           "- попробует поднять лимит драйвера до потолка прошивки`n`n" +
-           "Прошивку (vBIOS) программа НЕ трогает: выше заводского потолка - только риск поломки.`nПродолжить?"
-    if (-not (Ask-User $msg 'Видеокарта: 140 Вт')) { return }
+    if (-not $Smi) { Head 'ВИДЕОКАРТА 140 ВТ'; Out-Box '!!! Драйвер NVIDIA не найден (нет nvidia-smi). Страница «Оптимизация Windows» -> «Драйверы NVIDIA и AMD».'; return }
     $script:Cat = 'gpu'
     Show-GpuPower -Fix
     Out-Box '', 'Применяю:'
@@ -1451,17 +1471,6 @@ function Do-Gpu140 {
         '  Проверка: кнопка «Замер пиковой мощности GPU».'
 }
 
-function Do-GpuPeak {
-    Head 'ЗАМЕР ПИКОВОЙ МОЩНОСТИ GPU'
-    if (-not $Smi) { Out-Box '!!! nvidia-smi не найден.'; return }
-    if ([LTK.Pwr]::OnAC() -ne 1) { Out-Box '[!] Подключите зарядку: на батарее 140 Вт недостижимы.' }
-    $script:GpuPeak = 0.0
-    $script:GpuMon = $true
-    Out-Box 'Мониторинг GPU включён, пик обнулён. Запустите тяжёлую игру или FurMark 2 на 3-5 минут',
-            'и смотрите строку GPU сверху: «пик» - максимальное потребление за замер.',
-            '  ~140 Вт - всё работает; ~115 Вт - не работает Dynamic Boost или не включён режим Turbo;',
-            '  ниже - перегрев, батарея или процессор забирает общий бюджет мощности.'
-}
 
 function Do-GpuHolders {
     Head 'ЧТО НЕ ДАЁТ ВИДЕОКАРТЕ УСНУТЬ'
@@ -1492,8 +1501,8 @@ function Do-GpuHolders {
     }
     $files = @($apps | Where-Object { $_.Path -like '*\*.exe' -and $_.Path -notmatch '\\Windows\\' } | Select-Object -ExpandProperty Path -Unique)
     if ($files.Count -and (Ask-User ("Назначить этим программам встроенную графику Radeon 780M (энергосбережение)?`n`n" + ($files -join "`n") +
-            "`n`nИгры из списка лучше не трогать. Откат - «Откатить настройки батареи».") 'Видеокарта и батарея')) {
-        $script:Cat = 'battery'
+            "`n`nИгры из списка лучше не трогать. Откат - переключатель «Браузеры и мессенджеры - без RTX 4070» на странице «Батарея».") 'Видеокарта и батарея')) {
+        $script:Cat = 'battery:gpuprefs'
         foreach ($f in $files) { Set-Reg 'HKCU:\Software\Microsoft\DirectX\UserGpuPreferences' $f 'GpuPreference=1;' 'String'; Out-Ok "  + $f" }
         Out-Box 'Готово. Перезапустите эти программы.'
     }
@@ -1518,120 +1527,6 @@ function Get-LowPowerApps {
     return $found
 }
 
-function Do-BatteryOptimize {
-    $apps = @(Get-LowPowerApps)
-    $appNames = if ($apps.Count) { ($apps | ForEach-Object { [IO.Path]::GetFileNameWithoutExtension($_) }) -join ', ' } else { 'не найдено' }
-    $items = @(
-        @{ Group = 'Процессор'; Key = 'boost'; On = $true; Text = 'Отключить турбобуст процессора на батарее'
-           Hint = 'Ryzen 7 8845HS на батарее работает до базовых 3,8 ГГц вместо 5,1. Самый заметный прирост автономности; от сети турбобуст остаётся.' }
-        @{ Group = 'Процессор'; Key = 'epp'; On = $true; Text = 'Процессор: приоритет энергосбережения (EPP 80%)'
-           Hint = 'Частота мягче поднимается в лёгких задачах: браузер, видео, документы.' }
-        @{ Group = 'Экран и режим Windows'; Key = 'refresh'; On = $true; Text = 'Экран 60 Гц на батарее, максимум (240 Гц) от сети - автоматически'
-           Hint = '240 Гц заметно увеличивают расход. Частота переключается сама при отключении и подключении зарядки.' }
-        @{ Group = 'Экран и режим Windows'; Key = 'overlay'; On = $true; Text = 'Режим Windows: «Лучшая энергоэффективность» на батарее, «Максимальная производительность» от сети'
-           Hint = 'Тоже переключается автоматически вместе с зарядкой.' }
-        @{ Group = 'Экран и режим Windows'; Key = 'saver'; On = $true; Text = 'Экономия энергии включается сразу при отключении зарядки'
-           Hint = 'Windows ограничивает фоновую активность и синхронизацию, немного снижает яркость.' }
-        @{ Group = 'Экран и режим Windows'; Key = 'screen'; On = $true; Text = 'На батарее: экран гаснет через 3 минуты, сон через 10 минут' ; Hint = '' }
-        @{ Group = 'Сон'; Key = 'standby'; On = $true; Text = 'Во сне без интернета + гибернация через 1 час сна'
-           Hint = 'Ноутбук не разряжается в рюкзаке за ночь: Wi-Fi во сне выключен, через час сна - гибернация (расход 0%).' }
-        @{ Group = 'Устройства'; Key = 'devices'; On = $true; Text = 'Энергосбережение PCIe (ASPM), USB и Wi-Fi на батарее'
-           Hint = 'Простаивающие SSD, Wi-Fi и USB засыпают. Если на батарее начнёт «подтормаживать» мышь или Wi-Fi - откатите.' }
-        @{ Group = 'Устройства'; Key = 'video'; On = $true; Text = 'Видео на батарее: экономичная обработка'
-           Hint = 'YouTube и фильмы на батарее воспроизводятся в экономичном режиме.' }
-        @{ Group = 'Программы'; Key = 'gpuprefs'; On = $true; Text = 'Браузеры и мессенджеры - только на встроенной графике Radeon 780M'
-           Hint = "Не будят RTX 4070 (проснувшаяся видеокарта сама по себе тратит несколько ватт). Найдено: $appNames." }
-        @{ Group = 'Программы'; Key = 'edge'; On = $true; Text = 'Edge не работает в фоне после закрытия'
-           Hint = 'Отключаются «Ускорение запуска» и фоновый режим Edge. В его настройках появится «Управляется организацией» - это нормально.' }
-        @{ Group = 'Программы'; Key = 'bgapps'; On = $false; Text = 'Запретить фоновую работу приложений из Microsoft Store (агрессивно)'
-           Hint = 'Экономит заряд, но приложения из Store (WhatsApp, Связь с телефоном, Почта) не будут присылать уведомления, пока закрыты.' }
-    )
-    $sel = Show-Options 'Максимальная автономность' ("Настройки действуют только на батарее - от сети ноутбук работает на полную.`n" +
-        'Каждое изменение запоминается, вернуть всё можно кнопкой «Откатить настройки батареи».') $items
-    if ($null -eq $sel) { return }
-    if (-not $sel.Count) { Out-Box 'Ничего не выбрано - отметьте нужные пункты галочками и нажмите «Применить».'; return }
-
-    Head 'МАКСИМАЛЬНАЯ АВТОНОМНОСТЬ'
-    $script:Cat = 'battery'
-    if ($sel['boost']) {
-        Set-Pow $PW.Proc $PW.Boost 0 'Турбобуст процессора на батарее: выкл'
-        powercfg -attributes $PW.Proc $PW.Boost -ATTRIB_HIDE 2>&1 | Out-Null   # показать настройку в «Электропитании»
-    }
-    if ($sel['epp']) { Set-Pow $PW.Proc $PW.Epp 80 'Энергоэффективность процессора на батарее: 80%' }
-    if ($sel['saver']) { Set-Pow $PW.Saver $PW.SaverAt 100 'Экономия энергии: всегда на батарее' }
-    if ($sel['screen']) {
-        Set-Pow $PW.Video $PW.ScreenOff 180 'Отключение экрана на батарее: 3 мин'
-        Set-Pow $PW.Sleep $PW.SleepAfter 600 'Сон на батарее: 10 мин'
-    }
-    if ($sel['standby']) {
-        $pk = Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\Power' -ErrorAction SilentlyContinue
-        $wasOn = ($pk.HibernateEnabled -eq 1)
-        Save-Original 'hib' @{ Kind = 'hib'; WasOn = $wasOn; WasType = $pk.HiberFileType }
-        if (-not $wasOn) { powercfg /hibernate on 2>&1 | Out-Null }
-        if ($pk.HiberFileType -eq 1) { powercfg /h /type full 2>&1 | Out-Null }
-        Out-Ok '  + Гибернация доступна'
-        Set-Pow $PW.None $PW.NetStandby 0 'Интернет во сне на батарее: выкл'
-        Set-Pow $PW.Sleep $PW.HibAfter 3600 'Гибернация после 1 часа сна на батарее'
-    }
-    if ($sel['devices']) {
-        Set-Pow $PW.Pcie $PW.Aspm 2 'PCIe ASPM на батарее: максимальное энергосбережение'
-        Set-Pow $PW.Usb $PW.UsbSuspend 1 'Временное отключение USB-портов на батарее: вкл'
-        Set-Pow $PW.Wifi $PW.WifiSave 3 'Wi-Fi на батарее: максимальное энергосбережение'
-    }
-    if ($sel['video']) { Set-Pow $PW.Media $PW.VideoPlay 2 'Воспроизведение видео на батарее: экономия энергии' }
-    [void][LTK.Pwr]::Apply()
-
-    if ($sel['gpuprefs']) {
-        foreach ($a in $apps) { Set-Reg 'HKCU:\Software\Microsoft\DirectX\UserGpuPreferences' $a 'GpuPreference=1;' 'String' }
-        if ($apps.Count) { Out-Ok "  + Встроенная графика для: $appNames (перезапустите эти программы)" } else { Out-Dim '  - Браузеры и мессенджеры не найдены' }
-    }
-    if ($sel['edge']) {
-        Set-Reg 'HKLM:\SOFTWARE\Policies\Microsoft\Edge' 'StartupBoostEnabled' 0
-        Set-Reg 'HKLM:\SOFTWARE\Policies\Microsoft\Edge' 'BackgroundModeEnabled' 0
-        Out-Ok '  + Edge: ускорение запуска и фоновый режим выкл'
-    }
-    if ($sel['bgapps']) {
-        Set-Reg 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\AppPrivacy' 'LetAppsRunInBackground' 2
-        Out-Ok '  + Фоновая работа приложений Store: запрещена'
-    }
-    if ($sel['refresh'] -or $sel['overlay']) {
-        $ch = @{}
-        if ($sel['refresh']) { $ch.Refresh = $true; $ch.DcHz = 60 }
-        if ($sel['overlay']) { $ch.DcOverlay = $OV_EFF; $ch.AcOverlay = $OV_PERF }
-        Install-Agent $ch
-    }
-    $mode = Get-GraphicsMode
-    if ($mode -eq 'dgpu' -or $mode -eq 'external') {
-        Out-Box '', "!!! $(Get-GraphicsModeText)."
-        Out-Box '    Это главный расход батареи - все настройки выше дадут намного меньше, пока это так.'
-        Show-HybridHelp
-    }
-    Out-Box '', 'Готово. Отключите зарядку - через пару секунд экран станет 60 Гц, а режим Windows - экономичным.',
-        'Проверка: «Состояние питания сейчас» и «Журнал автопереключения».', '',
-        'ВРУЧНУЮ (программа это сделать не может):',
-        '  - NVIDIA App -> Настройки -> Battery Boost: вкл (ограничивает FPS игр на батарее).',
-        '  - Подсветку клавиатуры на батарее - выключить (Fn + клавиша подсветки).',
-        '  - Яркость 40-60% - экран главный потребитель после видеокарты.',
-        '  - AMD Software -> Настройки -> Дисплей -> Vari-Bright: вкл.',
-        '  - Steam, Discord, NVIDIA overlay и лишнее из автозагрузки - кнопка «Автозагрузка программ».'
-}
-
-function Do-BatteryUndo {
-    Head 'ОТКАТ НАСТРОЕК БАТАРЕИ'
-    $script:Cat = 'battery'
-    $n = Undo-Journal 'battery'
-    $cfg = Get-AgentConfig
-    if ($cfg -and ($cfg.Refresh -or $cfg.DcOverlay)) {
-        if ($cfg.AcOverlay) {
-            Install-Agent @{ Refresh = $false; DcOverlay = '' }
-            $rates = @([LTK.Disp]::Rates()); if ($rates.Count) { [void][LTK.Disp]::Set($rates[-1]) }
-            Out-Box '  Автопереключение оставлено только для режима «Максимальная производительность» от сети (140 Вт).'
-        } else { Uninstall-Agent }
-        $n++
-    }
-    if ($n) { Out-Ok "Возвращено исходных значений: $n." } else { Out-Box 'Изменений батареи от этой программы нет.' }
-}
-
 function Do-PowerStatus {
     Head 'ПИТАНИЕ СЕЙЧАС'
     $ac = [LTK.Pwr]::OnAC()
@@ -1651,7 +1546,7 @@ function Do-PowerStatus {
         if ($cfg.DcOverlay) { $parts += 'экономичный режим на батарее' }
         if ($cfg.AcOverlay) { $parts += 'производительность от сети' }
         Out-Ok "Автопереключение:    вкл ($($parts -join ', '))"
-    } else { Out-Box 'Автопереключение:    выкл (кнопка «Максимальная автономность»)' }
+    } else { Out-Box 'Автопереключение:    выкл (страница «Батарея»)' }
 
     Out-Box '', 'На батарее (текущая схема):'
     $fmt = {
@@ -1676,7 +1571,7 @@ function Do-PowerStatus {
 function Do-AgentLog {
     Head 'ЖУРНАЛ АВТОПЕРЕКЛЮЧЕНИЯ'
     $p = Join-Path $DataDir 'agent.log'
-    if (-not (Test-AgentTask)) { Out-Box 'Автопереключение не включено (кнопка «Максимальная автономность» или «140 Вт: разблокировать»).'; return }
+    if (-not (Test-AgentTask)) { Out-Box 'Автопереключение не включено (страница «Батарея» -> «Экономия при работе от батареи»).'; return }
     if (-not (Test-Path $p)) { Out-Box 'Записей пока нет - отключите и подключите зарядку.'; return }
     Out-Dim 'Код после стрелки: 0 = успешно.'
     Get-Content $p -Encoding UTF8 | Select-Object -Last 25 | ForEach-Object { Out-Box $_ }
@@ -1783,7 +1678,7 @@ function Do-Suspicious {
     Out-Box '', '--- Прокси ---'
     $ie = Get-ItemProperty 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Internet Settings' -ErrorAction SilentlyContinue
     if ($ie.ProxyEnable -eq 1 -or $ie.AutoConfigURL) { Out-Box "[?] Включён прокси: $($ie.ProxyServer) $($ie.AutoConfigURL)" } else { Out-Box '    не используется' }
-    Out-Box '', 'Глубже: Sysinternals Autoruns (кнопка «Установить утилиты»).'
+    Out-Box '', 'Глубже: Sysinternals Autoruns (страница «Инструменты»).'
 }
 
 # ---------------- ОПТИМИЗАЦИЯ WINDOWS ----------------
@@ -1810,105 +1705,6 @@ $Bloat = [ordered]@{
     'Clipchamp.Clipchamp' = 'Clipchamp'; 'Microsoft.WindowsFeedbackHub' = 'Центр отзывов'; 'MicrosoftTeams' = 'Teams (личный)'
     'MSTeams' = 'Teams (новый)'; 'Microsoft.549981C3F5F10' = 'Cortana'; 'Microsoft.WindowsMaps' = 'Карты'
     'Microsoft.MixedReality.Portal' = 'Смешанная реальность'; 'Microsoft.SkypeApp' = 'Skype'; 'Microsoft.Copilot' = 'Copilot'
-}
-
-function Do-WinOptimize {
-    $items = @(
-        @{ Group = 'Игры'; Key = 'gamemode'; On = $true; Text = 'Игровой режим Windows: вкл'; Hint = 'Игре - приоритет, фоновые обновления не мешают.' }
-        @{ Group = 'Игры'; Key = 'dvr'; On = $true; Text = 'Фоновая запись Xbox Game Bar: выкл'; Hint = 'Постоянная запись последних минут игры отнимает FPS. Сам Game Bar (Win+G) остаётся.' }
-        @{ Group = 'Игры'; Key = 'hags'; On = $true; Text = 'Аппаратное планирование GPU (HAGS): вкл'; Hint = 'Меньше задержка, нужно для DLSS Frame Generation. Применится после перезагрузки.' }
-        @{ Group = 'Приватность и реклама'; Key = 'telemetry'; On = $true; Text = 'Телеметрия: минимум, службы DiagTrack и dmwappushservice выкл'; Hint = 'Меньше фоновой отправки данных - и меньше расход батареи.' }
-        @{ Group = 'Приватность и реклама'; Key = 'ads'; On = $true; Text = 'Реклама, «рекомендации» и автоустановка приложений: выкл'; Hint = 'Рекламный ID, предложения в Пуске и Параметрах, тихая установка Candy Crush и т.п.' }
-        @{ Group = 'Приватность и реклама'; Key = 'bing'; On = $true; Text = 'Bing в поиске меню Пуск: выкл'; Hint = 'Поиск в Пуске ищет только на компьютере - быстрее и без лишнего трафика.' }
-        @{ Group = 'Приватность и реклама'; Key = 'widgets'; On = $true; Text = 'Виджеты и новости на панели задач: выкл'; Hint = 'Убирает фоновые процессы виджетов (Edge WebView).' }
-        @{ Group = 'Приватность и реклама'; Key = 'copilot'; On = $true; Text = 'Copilot: выкл'; Hint = 'Убирает кнопку и отключает Copilot политикой.' }
-        @{ Group = 'Система'; Key = 'delivery'; On = $true; Text = 'Не раздавать обновления другим компьютерам'; Hint = 'Оптимизация доставки только качает, а не раздаёт ваш интернет чужим ПК.' }
-        @{ Group = 'Система'; Key = 'debloat'; On = $true; Text = 'Удалить предустановленный мусор'
-           Hint = "$(@($Bloat.Values) -join ', '). Без отката: вернуть можно из Microsoft Store." }
-        @{ Group = 'Система'; Key = 'fileext'; On = $true; Text = 'Показывать расширения файлов'; Hint = 'Защита от вирусов вида «фото.jpg.exe».' }
-        @{ Group = 'Система'; Key = 'transp'; On = $false; Text = 'Отключить прозрачность окон'; Hint = 'Чуть меньше нагрузка на графику и расход батареи, но интерфейс проще.' }
-        @{ Group = 'Система'; Key = 'ctxmenu'; On = $false; Text = 'Классическое контекстное меню (как в Windows 10)'; Hint = 'Без «Показать дополнительные параметры». Применится после перезапуска Проводника.' }
-    )
-    $sel = Show-Options 'Оптимизация Windows' ("Выберите, что изменить. Всё, кроме удаления приложений, можно вернуть кнопкой «Откатить оптимизацию Windows».`n" +
-        'Для батареи - отдельная кнопка «Максимальная автономность».') $items
-    if ($null -eq $sel) { return }
-    if (-not $sel.Count) { Out-Box 'Ничего не выбрано - отметьте нужные пункты галочками и нажмите «Применить».'; return }
-    if (Ask-User 'Создать точку восстановления перед изменениями? (рекомендуется)' 'Оптимизация Windows') {
-        try { Do-Restore } catch { Out-Box "[!] Точка восстановления: $($_.Exception.Message)" }
-    }
-    Head 'ОПТИМИЗАЦИЯ WINDOWS'
-    $script:Cat = 'windows'
-    $adv = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced'
-    if ($sel['gamemode']) {
-        Set-Reg 'HKCU:\Software\Microsoft\GameBar' 'AutoGameModeEnabled' 1
-        Set-Reg 'HKCU:\Software\Microsoft\GameBar' 'AllowAutoGameMode' 1
-        Out-Ok '  + Игровой режим'
-    }
-    if ($sel['dvr']) {
-        Set-Reg 'HKCU:\System\GameConfigStore' 'GameDVR_Enabled' 0
-        Set-Reg 'HKCU:\Software\Microsoft\Windows\CurrentVersion\GameDVR' 'AppCaptureEnabled' 0
-        Out-Ok '  + Фоновая запись игр выкл'
-    }
-    if ($sel['hags']) { Set-Reg 'HKLM:\SYSTEM\CurrentControlSet\Control\GraphicsDrivers' 'HwSchMode' 2; Out-Ok '  + HAGS вкл (после перезагрузки)' }
-    if ($sel['telemetry']) {
-        Set-Reg 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\DataCollection' 'AllowTelemetry' 0
-        foreach ($s in 'DiagTrack', 'dmwappushservice') { [void](Set-Svc $s 'Disabled') }
-        Out-Ok '  + Телеметрия минимум, службы выкл'
-    }
-    if ($sel['ads']) {
-        Set-Reg 'HKCU:\Software\Microsoft\Windows\CurrentVersion\AdvertisingInfo' 'Enabled' 0
-        Set-Reg 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Privacy' 'TailoredExperiencesWithDiagnosticDataEnabled' 0
-        $cdm = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\ContentDeliveryManager'
-        foreach ($n in 'SilentInstalledAppsEnabled', 'SystemPaneSuggestionsEnabled', 'SoftLandingEnabled', 'SubscribedContent-338388Enabled',
-                       'SubscribedContent-338389Enabled', 'SubscribedContent-338393Enabled', 'SubscribedContent-353694Enabled',
-                       'SubscribedContent-353696Enabled', 'SubscribedContent-310093Enabled') { Set-Reg $cdm $n 0 }
-        Set-Reg $adv 'Start_IrisRecommendations' 0
-        Out-Ok '  + Реклама и рекомендации выкл'
-    }
-    if ($sel['bing']) {
-        Set-Reg 'HKCU:\Software\Policies\Microsoft\Windows\Explorer' 'DisableSearchBoxSuggestions' 1
-        Set-Reg 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Search' 'BingSearchEnabled' 0
-        Out-Ok '  + Bing в поиске выкл'
-    }
-    if ($sel['widgets']) { Set-Reg 'HKLM:\SOFTWARE\Policies\Microsoft\Dsh' 'AllowNewsAndInterests' 0; Out-Ok '  + Виджеты выкл' }
-    if ($sel['copilot']) {
-        Set-Reg 'HKCU:\Software\Policies\Microsoft\Windows\WindowsCopilot' 'TurnOffWindowsCopilot' 1
-        Set-Reg 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsCopilot' 'TurnOffWindowsCopilot' 1
-        Set-Reg $adv 'ShowCopilotButton' 0
-        Out-Ok '  + Copilot выкл'
-    }
-    if ($sel['delivery']) { Set-Reg 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\DeliveryOptimization' 'DODownloadMode' 0; Out-Ok '  + Раздача обновлений выкл' }
-    if ($sel['fileext']) { Set-Reg $adv 'HideFileExt' 0; Out-Ok '  + Расширения файлов видны' }
-    if ($sel['transp']) { Set-Reg 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize' 'EnableTransparency' 0; Out-Ok '  + Прозрачность выкл' }
-    if ($sel['ctxmenu']) {
-        Set-Reg 'HKCU:\Software\Classes\CLSID\{86ca1aa0-34aa-4e8b-a509-50c905bae2a2}\InprocServer32' '(default)' '' 'String'
-        Out-Ok '  + Классическое контекстное меню'
-    }
-    if ($sel['debloat']) {
-        $removed = @()
-        foreach ($k in $Bloat.Keys) {
-            $pk = @(Get-AppxPackage -Name $k -ErrorAction SilentlyContinue)
-            if (-not $pk.Count) { continue }
-            $statusLbl.Text = "Удаляю: $($Bloat[$k])..."; [Windows.Forms.Application]::DoEvents()
-            $pk | Remove-AppxPackage -ErrorAction SilentlyContinue
-            if (-not (Get-AppxPackage -Name $k -ErrorAction SilentlyContinue)) { $removed += $Bloat[$k] }
-        }
-        if ($removed.Count) { Out-Ok "  + Удалено: $($removed -join ', ')" } else { Out-Dim '  - Лишних приложений не найдено' }
-    }
-    Out-Box '', 'Готово. Часть изменений применится после перезагрузки.'
-    if ($sel['widgets'] -or $sel['copilot'] -or $sel['fileext'] -or $sel['ctxmenu'] -or $sel['ads']) {
-        if (Ask-User 'Перезапустить Проводник, чтобы изменения панели задач применились сейчас? (окна папок закроются)' 'Оптимизация Windows') {
-            Stop-Process -Name explorer -Force -ErrorAction SilentlyContinue
-        }
-    }
-}
-
-function Do-WinUndo {
-    Head 'ОТКАТ ОПТИМИЗАЦИИ WINDOWS'
-    $script:Cat = 'windows'
-    $n = Undo-Journal 'windows'
-    if ($n) { Out-Ok "Возвращено исходных значений: $n. Перезагрузите ноутбук." }
-    else { Out-Box 'Изменений от этой программы нет. Более глубокий откат - точка восстановления: Win+R -> rstrui' }
 }
 
 function Do-Cleanup {
@@ -2001,47 +1797,7 @@ function Do-RamTest {
 function Do-DiskSpeed { Start-Console 'Тест скорости диска' "winsat disk -drive $($env:SystemDrive.TrimEnd(':'))" }
 
 # ---------------- УТИЛИТЫ ----------------
-function Do-Tools {
-    if (-not (Test-Winget)) { return }
-    $tools = [ordered]@{
-        'HWiNFO64 - все температуры и датчики'        = 'REALiX.HWiNFO'
-        'MSI Afterburner - разгон/андервольт RTX 4070' = 'Guru3D.Afterburner'
-        'OCCT - стресс CPU/GPU/RAM/БП'                 = 'OCBase.OCCT.Personal'
-        'FurMark 2 - стресс видеокарты (замер 140 Вт)' = 'Geeks3D.FurMark.2'
-        'Cinebench R23 - тест процессора'              = 'Maxon.CinebenchR23'
-        'CPU-Z'                                        = 'CPUID.CPU-Z'
-        'GPU-Z'                                        = 'TechPowerUp.GPU-Z'
-        'CrystalDiskInfo - здоровье SSD'               = 'CrystalDewWorld.CrystalDiskInfo'
-        'CrystalDiskMark - скорость SSD'               = 'CrystalDewWorld.CrystalDiskMark'
-        'Sysinternals Autoruns - вся автозагрузка'     = 'Microsoft.Sysinternals.Autoruns'
-        '7-Zip'                                        = '7zip.7zip'
-    }
-    $items = foreach ($k in $tools.Keys) { @{ Key = $k; Text = $k; On = ($k -match 'HWiNFO|Afterburner|OCCT|FurMark|CrystalDiskInfo') } }
-    $sel = Show-Options 'Установить утилиты (winget)' 'Отмеченные программы установятся с официальных источников через winget в отдельном окне.' @($items) 'Установить'
-    if ($null -eq $sel -or -not $sel.Count) { return }
-    $cmds = foreach ($k in $tools.Keys) { if ($sel[$k]) { "winget install -e --id $($tools[$k]) --accept-package-agreements --accept-source-agreements" } }
-    Start-Console 'Установка утилит' ($cmds -join '; ')
-}
 
-function Find-Afterburner {
-    $c = @("${env:ProgramFiles(x86)}\MSI Afterburner\MSIAfterburner.exe", "$env:ProgramFiles\MSI Afterburner\MSIAfterburner.exe")
-    foreach ($k in 'HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\Afterburner',
-                   'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\Afterburner') {
-        $loc = (Get-ItemProperty $k -ErrorAction SilentlyContinue).InstallLocation
-        if ($loc) { $c += Join-Path $loc 'MSIAfterburner.exe' }
-    }
-    $c | Where-Object { Test-Path $_ } | Select-Object -First 1
-}
-
-function Do-Afterburner {
-    $p = Find-Afterburner
-    if ($p) { Start-Process $p; Out-Box 'MSI Afterburner запущен.'; return }
-    if (-not (Ask-User 'MSI Afterburner не установлен. Установить сейчас (winget, официальный пакет) и сразу запустить?' 'MSI Afterburner')) { return }
-    if (-not (Test-Winget)) { return }
-    $p86 = "${env:ProgramFiles(x86)}\MSI Afterburner\MSIAfterburner.exe"
-    Start-Console 'Установка MSI Afterburner' ("winget install -e --id Guru3D.Afterburner --accept-package-agreements --accept-source-agreements; " +
-        "if (Test-Path '$p86') { Start-Process '$p86' } else { Write-Host 'Если установка прошла - запустите Afterburner из меню Пуск.' }")
-}
 
 function Do-OcGuide {
     Head 'РАЗГОН И ПРОИЗВОДИТЕЛЬНОСТЬ'
@@ -2058,8 +1814,8 @@ function Do-OcGuide {
         '  - ГЛАВНЫЙ апгрейд: вторая такая же планка 16 ГБ DDR5-5600 SODIMM = двухканал.',
         '',
         'ВИДЕОКАРТА (RTX 4070 Laptop) - MSI Afterburner',
-        '  0. Сначала мощность: кнопка «140 Вт: разблокировать» (раздел ВИДЕОКАРТА 140 ВТ).',
-        '  1. Установите Afterburner + HWiNFO + OCCT/FurMark (кнопка «Установить утилиты»).',
+        '  0. Сначала мощность: «Включить всё для 140 Вт» на странице «Видеокарта».',
+        '  1. Установите Afterburner + HWiNFO + OCCT/FurMark (страница «Инструменты»).',
         '  2. Core Clock +100, Memory Clock +500 -> Apply -> тест 10 мин (FurMark 2 / OCCT / любимая игра).',
         '  3. Стабильно - поднимайте шагом +25 core / +250 mem.',
         '     Артефакты, вылет игры или драйвера -> шаг назад. Это и есть ваш предел.',
@@ -2074,8 +1830,8 @@ function Do-OcGuide {
         '  - Панель управления NVIDIA -> Управление режимом дисплея -> «Только дискретная графика» (если есть): +5..15%.',
         '    На батарее верните «Автоматический выбор» - иначе заряд уходит в разы быстрее.',
         '  - Играть только от сети: на батарее видеокарта сильно урезана.',
-        '  - Кнопки «Оптимизация Windows» и «140 Вт: разблокировать» в этой программе.',
-        '  - Свежие драйверы NVIDIA и AMD Chipset (кнопка «Драйверы NVIDIA / AMD»).'
+        '  - Страницы «Оптимизация Windows» и «Видеокарта» в этой программе.',
+        '  - Свежие драйверы NVIDIA и AMD Chipset (страница «Оптимизация Windows» -> «Драйверы NVIDIA и AMD»).'
     )
 }
 
@@ -2099,7 +1855,7 @@ function Do-WinGuide {
         '  4. Загрузка с флешки (Boot Menu: F7/F11/F12/Esc при включении - зависит от модели),',
         '     удалить все разделы системного диска -> установка в незанятое место.',
         '  5. Драйверы: Диспетчер устройств -> Обновить драйвер -> папка с флешки; затем NVIDIA App и AMD.',
-        '  6. Запустите этот Toolkit: Обновить всё -> 140 Вт: разблокировать -> Оптимизация Windows -> Максимальная автономность.'
+        '  6. Запустите этот Toolkit: Главная -> всё жёлтое и красное по кнопкам справа.'
     )
     try {
         $v = Get-CimInstance -Namespace root\cimv2\Security\MicrosoftVolumeEncryption -ClassName Win32_EncryptableVolume -Filter "DriveLetter='$env:SystemDrive'" -ErrorAction Stop
@@ -2117,154 +1873,1001 @@ function Do-Save {
     Out-Ok '', "Отчёт сохранён: $p"
 }
 
-# ---------------- РАЗДЕЛЫ И КАРТОЧКИ ----------------
+# ================= СТРАНИЦЫ =================
+# Каждая страница - список строк. Строка сама проверяет состояние (Load) и показывает ✓ / ! / ✕,
+# а кнопка или переключатель справа сразу исправляет. Проверки идут в фоне по одной строке,
+# поэтому окно не зависает.
+
 $script:Pages = [ordered]@{}
 $script:NavItems = @{}
 $script:PageKey = $null
+$script:Queue = New-Object Collections.ArrayList
+$script:Cache = @{}
 
-function Add-Page([string]$key, [string]$title, [string]$desc) {
-    $script:Pages[$key] = @{ Title = $title; Desc = $desc; Cards = (New-Object Collections.ArrayList) }
+function Cached([string]$key, [int]$sec, [scriptblock]$get) {
+    $c = $script:Cache[$key]
+    if ($c -and ((Get-Date) - $c.T).TotalSeconds -lt $sec) { return $c.V }
+    $v = & $get
+    $script:Cache[$key] = @{ T = Get-Date; V = $v }
+    return $v
+}
+
+function Add-Nav([string]$key, [string]$title, [string]$icon) {
     $n = New-Object LTK.UI.NavItem
-    $n.Text = $title; $n.Glyph = Ico $key; $n.GlyphFont = $fIconNav; $n.Font = $fUi
+    $n.Text = $title; $n.Glyph = Ico $icon; $n.GlyphFont = $fIconNav; $n.Font = $fUi
     $n.Size = Sz 208 42; $n.Margin = Pad 0 0 0 3; $n.Tag = $key
     $n.Add_Click({ param($s, $e) Show-Page $s.Tag })
     $navFlow.Controls.Add($n)
     $script:NavItems[$key] = $n
+    $n
+}
+
+function Add-Page([string]$key, [string]$title, [string]$icon, [string]$desc) {
+    [void](Add-Nav $key $title $icon)
+    $flow = New-Object Windows.Forms.FlowLayoutPanel
+    $flow.Dock = 'Fill'; $flow.FlowDirection = 'TopDown'; $flow.WrapContents = $false; $flow.AutoScroll = $true
+    $flow.BackColor = $bg; $flow.Padding = Pad 0 0 14 18; $flow.Visible = $false
+    $t = New-Object Windows.Forms.Label
+    $t.Text = $title; $t.Font = $fPage; $t.ForeColor = $fg; $t.AutoSize = $true; $t.Margin = Pad 0 12 0 2
+    $d = New-Object Windows.Forms.Label
+    $d.Text = $desc; $d.Font = $fUi; $d.ForeColor = $cDim; $d.AutoSize = $true; $d.Margin = Pad 2 0 0 10; $d.Tag = 'wrap'
+    $flow.Controls.AddRange(@($t, $d))
+    $flow.Add_Resize({ param($s, $e) Update-PageWidth $s })
+    $pageHost.Controls.Add($flow)
+    $script:Pages[$key] = @{ Flow = $flow; Rows = (New-Object Collections.ArrayList) }
     $script:CurPage = $key
 }
 
-# Карточка добавляется в текущий раздел (последний Add-Page) и, с -Home, на главную.
-function Add-Card([string]$title, [string]$desc, [scriptblock]$action, [switch]$Primary, [string]$Page = $script:CurPage) {
-    $c = New-Object LTK.UI.Card
-    $c.Title = $title; $c.Desc = $desc; $c.Primary = [bool]$Primary
-    $c.Glyph = Ico $Page; $c.GlyphFont = $fIcon; $c.TitleFont = $fSemi; $c.DescFont = $fSmall
-    $c.Tag = @{ Name = $title; Action = $action }
-    $c.Add_Click({ param($s, $e) Invoke-Safe $s.Tag.Name $s.Tag.Action })
-    [void]$script:Pages[$Page].Cards.Add($c)
+function Update-PageWidth($flow) {
+    $w = $flow.ClientSize.Width - $flow.Padding.Horizontal - 2
+    if ($w -lt 200) { return }
+    $flow.SuspendLayout()
+    foreach ($c in $flow.Controls) {
+        if ($c -is [LTK.UI.Row]) { if ($c.Width -ne $w) { $c.Width = $w } }
+        elseif ($c.Tag -eq 'wrap') { $c.MaximumSize = New-Object Drawing.Size($w, 0) }
+    }
+    $flow.ResumeLayout()
 }
 
-function Update-CardLayout {
-    if ($script:InLayout) { return }
-    $script:InLayout = $true
-    try {
-        $list = @($cards.Controls)
-        $n = $list.Count
-        if (-not $n) { $cards.Height = 0; return }
-        $W = $cards.ClientSize.Width
-        $gap = Px 12; $ch = Px 88
-        $cols = [int][math]::Max(1, [math]::Min($n, [math]::Floor(($W + $gap) / ((Px 290) + $gap))))
-        $cw = [int][math]::Floor(($W - $gap * ($cols - 1)) / $cols) - 1
-        for ($i = 0; $i -lt $n; $i++) {
-            $list[$i].Size = New-Object Drawing.Size($cw, $ch)
-            $right = if (($i % $cols) -eq ($cols - 1)) { 0 } else { $gap }
-            $list[$i].Margin = New-Object Windows.Forms.Padding(0, 0, $right, $gap)
-        }
-        $cards.Height = [int]([math]::Ceiling($n / $cols) * ($ch + $gap))
-    } finally { $script:InLayout = $false }
+function Add-Section([string]$text, [string]$hint = '') {
+    $flow = $script:Pages[$script:CurPage].Flow
+    $l = New-Object Windows.Forms.Label
+    $l.Text = $text.ToUpper(); $l.Font = $fTileCap; $l.ForeColor = $accent; $l.AutoSize = $true; $l.Margin = Pad 2 16 0 6
+    $flow.Controls.Add($l)
+    if ($hint) {
+        $h = New-Object Windows.Forms.Label
+        $h.Text = $hint; $h.Font = $fSmall; $h.ForeColor = $cDim; $h.AutoSize = $true; $h.Margin = Pad 2 0 0 8; $h.Tag = 'wrap'
+        $flow.Controls.Add($h)
+    }
+}
+
+# -Load { param($r) ... Set-Row $r ... } проверяет состояние; -Click { param($r) ... } выполняет действие.
+# -ToLog: после действия открыть «Журнал» (там подробный текст).
+function Add-Row([string]$title, [string]$desc, [string]$action = '', [scriptblock]$Load = $null, [scriptblock]$Click = $null,
+                 [switch]$Switch, [switch]$Primary, [switch]$ToLog, [double]$H = 70) {
+    $r = New-Object LTK.UI.Row
+    $r.Title = $title; $r.Desc = $desc; $r.Action = $action; $r.Switch = [bool]$Switch; $r.Primary = [bool]$Primary
+    $r.TitleFont = $(if ($Primary) { $fTitleRow } else { $fSemi }); $r.DescFont = $fSmall; $r.ValueFont = $fUi; $r.ActionFont = $fSemiSm
+    $r.Height = Px $H; $r.Margin = Pad 0 0 0 8
+    $r.State = $(if ($Load) { 4 } else { 0 })
+    $r.Tag = @{ Load = $Load; Click = $Click; Name = $title; Page = $script:CurPage; ToLog = [bool]$ToLog; Loaded = $false }
+    $r.Add_ActionClick({ param($s, $e) Invoke-RowClick $s })
+    $p = $script:Pages[$script:CurPage]
+    $p.Flow.Controls.Add($r)
+    [void]$p.Rows.Add($r)
+    $r
+}
+
+function Set-Row($r, [int]$State, $Value = $null, $Desc = $null, $On = $null, $Action = $null) {
+    $r.State = $State
+    if ($null -ne $Value) { $r.Value = $Value }
+    if ($null -ne $Desc) { $r.Desc = $Desc }
+    if ($null -ne $On) { $r.On = [bool]$On }
+    if ($null -ne $Action) { $r.Action = $Action }
+    $r.Invalidate()
+}
+
+function Load-Row($r) {
+    $t = $r.Tag
+    if (-not $t.Load) { return }
+    try { & $t.Load $r; $t.Loaded = $true }
+    catch { Set-Row $r 5 'не удалось проверить' "Причина: $($_.Exception.Message)" }
+}
+
+function Invoke-RowClick($r) {
+    $t = $r.Tag
+    if (-not $t.Click) { return }
+    Invoke-Safe $t.Name { & $t.Click $r }
+    $script:Cache.Clear()
+    if ($t.ToLog) { Show-Page 'log' }
+    else {
+        if ($t.Load) { Load-Row $r }
+        Queue-Page $t.Page -Front
+    }
+}
+
+function Queue-Page([string]$key, [switch]$Front) {
+    $p = $script:Pages[$key]
+    if (-not $p) { return }
+    $rows = @($p.Rows | Where-Object { $_.Tag.Load })
+    foreach ($r in $rows) { $script:Queue.Remove($r) }
+    if ($Front) { $script:Queue.InsertRange(0, $rows) } else { $script:Queue.AddRange($rows) }
 }
 
 function Show-Page([string]$key) {
     if ($script:PageKey -eq $key) { return }
     $script:PageKey = $key
     foreach ($k in $script:NavItems.Keys) { $script:NavItems[$k].Selected = ($k -eq $key); $script:NavItems[$k].Invalidate() }
-    $p = $script:Pages[$key]
-    $pageTitle.Text = $p.Title
-    $pageDesc.Text = $p.Desc
-    $main.SuspendLayout()
-    $cards.Controls.Clear()
-    $cards.Controls.AddRange([Windows.Forms.Control[]]@($p.Cards))
-    Update-CardLayout
-    $main.ResumeLayout()
+    $pageHost.SuspendLayout()
+    foreach ($k in $script:Pages.Keys) { $script:Pages[$k].Flow.Visible = ($k -eq $key) }
+    $logPage.Visible = ($key -eq 'log')
+    $pageHost.ResumeLayout()
+    if ($key -eq 'log') {
+        $script:LogNav.Dot = $false; $script:LogNav.Invalidate()
+    } else {
+        $f = $script:Pages[$key].Flow
+        Update-PageWidth $f
+        $f.AutoScrollPosition = New-Object Drawing.Point(0, 0)
+        Queue-Page $key -Front
+    }
 }
-$cards.Add_SizeChanged({ Update-CardLayout })
 
-Add-Page 'home' 'Главная' 'Самое важное для этого ноутбука - по порядку, сверху вниз.'
-Add-Card 'Полная проверка' 'Все проверки подряд и отчёт в папку LaptopToolkit на рабочем столе.' { Do-Full } -Primary
-Add-Card '140 Вт: разблокировать' 'Полная мощность RTX 4070 от сети: Dynamic Boost, службы NVIDIA, режим Windows.' { Do-Gpu140 } -Primary
-Add-Card 'Оптимизация Windows' 'Игры, приватность, реклама, лишние приложения - выбор галочками.' { Do-WinOptimize } -Primary
-Add-Card 'Максимальная автономность' 'Только на батарее: 60 Гц, без турбобуста, экономия, сон. От сети - на полную.' { Do-BatteryOptimize } -Primary
-Add-Card 'Точка восстановления' 'Снимок системы перед изменениями. Откат: Win+R -> rstrui.' { Do-Restore }
-Add-Card 'Состояние питания сейчас' 'Источник, режим Windows, частота экрана и все настройки батареи.' { Do-PowerStatus }
+$loader = New-Object Windows.Forms.Timer
+$loader.Interval = 40
+$loader.Add_Tick({
+    if ($script:Busy -or -not $script:Queue.Count) { return }
+    $loader.Stop()
+    try {
+        $r = $script:Queue[0]
+        $script:Queue.RemoveAt(0)
+        Load-Row $r
+    } finally { $loader.Start() }
+})
 
-Add-Page 'diag' 'Диагностика' 'Проверка железа и системы. Ничего не меняет.'
-Add-Card 'Полная проверка' 'Все проверки подряд и сохранение отчёта.' { Do-Full } -Primary
-Add-Card 'Система и процессор' 'Модель, Windows, BIOS, Secure Boot, TPM, VBS.' { Do-System }
-Add-Card 'Оперативная память' 'Планки, частота, одноканальный режим.' { Do-Ram }
-Add-Card 'Видеокарта' 'Драйвер, частоты, температура, лимиты мощности.' { Do-Gpu }
-Add-Card 'Диски и SSD' 'Здоровье, износ, температура, свободное место, TRIM.' { Do-Disk }
-Add-Card 'Батарея' 'Износ, ёмкость, циклы и подробный HTML-отчёт Windows.' { Do-Battery }
-Add-Card 'Проблемные драйверы' 'Устройства с ошибками в Диспетчере устройств.' { Do-Drivers }
-Add-Card 'Журнал сбоев' 'Синие экраны, WHEA, сбои видеодрайвера за 30 дней.' { Do-Events }
+# ----- общие проверки -----
+function Fmt-Sec($v) { if ($v -le 0) { 'никогда' } elseif ($v -ge 3600 -and $v % 3600 -eq 0) { "$($v / 3600) ч" } elseif ($v -ge 60) { "$([int]($v / 60)) мин" } else { "$v с" } }
 
-Add-Page 'gpu' 'Видеокарта 140 Вт' 'RTX 4070 Laptop: 115 Вт база + 25 Вт Dynamic Boost. Только от сети. vBIOS не трогается.'
-Add-Card '140 Вт: разблокировать' 'Включает Dynamic Boost и службы NVIDIA, режим «Максимальная производительность» от сети.' { Do-Gpu140 } -Primary
-Add-Card 'Проверить мощность' 'Лимиты, Dynamic Boost и режимы - только показывает, ничего не меняет.' { Do-GpuCheck }
-Add-Card 'Замер пиковой мощности' 'Включает слежение за GPU и запоминает пик ватт, пока вы играете.' { Do-GpuPeak }
-Add-Card 'Что держит видеокарту' 'Какие программы не дают RTX 4070 уснуть.' { Do-GpuHolders }
-Add-Card 'Режим графики' 'Гибрид (Optimus) или только RTX 4070: проверка и как переключить.' { Do-HybridHelp }
+function Get-DbState {
+    $pcf = @(Get-Nvpcf)
+    if (-not $pcf.Count) { return 'missing' }
+    $d = $pcf[0]
+    $code = Get-CmCode $d
+    if ("$($d.Status)" -eq 'OK') { return 'ok' }
+    if ($code -eq 22) { return 'disabled' }
+    if ($code -eq 28) { return 'nodriver' }
+    return "error $code"
+}
 
-Add-Page 'battery' 'Батарея' 'Всё, что продлевает работу без зарядки. Действует только на батарее.'
-Add-Card 'Максимальная автономность' '60 Гц, без турбобуста, экономия энергии, сон, устройства - галочками.' { Do-BatteryOptimize } -Primary
-Add-Card 'Состояние питания сейчас' 'Источник, режим Windows, частота экрана и все настройки батареи.' { Do-PowerStatus }
-Add-Card 'Что не даёт видеокарте уснуть' 'Программы, которые будят RTX 4070 и садят батарею.' { Do-GpuHolders }
-Add-Card 'Режим графики' 'Гибридный или только дискретная: главное для батареи. Подскажет, как переключить.' { Do-HybridHelp }
-Add-Card 'Энергоотчёт' '60 секунд наблюдения Windows: что мешает экономии энергии.' { Do-EnergyReport }
-Add-Card 'Расход во сне' 'Sleep Study: сколько заряда ушло во сне и почему.' { Do-SleepStudy }
-Add-Card 'Журнал автопереключения' 'Когда и что переключалось при подключении и отключении зарядки.' { Do-AgentLog }
-Add-Card 'Откатить настройки батареи' 'Вернуть всё, что изменила «Максимальная автономность».' { Do-BatteryUndo }
+function Get-GpuInfo {
+    Cached 'gpu' 20 {
+        $h = @{ Smi = [bool]$Smi; Db = (Get-DbState); Max = $null; Def = $null; Cur = $null; AC = ([LTK.Pwr]::OnAC() -eq 1) }
+        # опрос nvidia-smi будит видеокарту - на батарее не трогаем
+        if ($Smi -and $h.AC) {
+            $v = Get-SmiValues @('enforced.power.limit', 'power.default_limit', 'power.max_limit')
+            $h.Cur = Num $v['enforced.power.limit']; $h.Def = Num $v['power.default_limit']; $h.Max = Num $v['power.max_limit']
+        }
+        $h
+    }
+}
 
-Add-Page 'windows' 'Оптимизация Windows' 'Быстрее и тише: без рекламы, телеметрии и лишнего. Всё откатывается.'
-Add-Card 'Оптимизация Windows' 'Игры, приватность, реклама, мусорные приложения - выбор галочками.' { Do-WinOptimize } -Primary
-Add-Card 'Точка восстановления' 'Снимок системы перед изменениями.' { Do-Restore }
-Add-Card 'Автозагрузка программ' 'Диспетчер задач: отключить лишнее при включении.' { Do-Startup }
-Add-Card 'Очистка диска' 'Временные файлы, корзина и старые обновления.' { Do-Cleanup }
-Add-Card 'Ремонт Windows' 'DISM + SFC: восстановление системных файлов.' { Do-Repair }
-Add-Card 'Обновить всё' 'Программы через winget и Центр обновления Windows.' { Do-Update }
-Add-Card 'Драйверы NVIDIA и AMD' 'Официальные страницы драйверов видеокарты и чипсета.' { Do-DriversWeb }
-Add-Card 'Chris Titus WinUtil' 'Сторонняя утилита твиков. Не отключайте в ней службы NVIDIA.' { Do-WinUtil }
-Add-Card 'Откатить оптимизацию' 'Вернуть всё, что изменила «Оптимизация Windows» (кроме удалённых приложений).' { Do-WinUndo }
+function Get-MpInfo { Cached 'mp' 30 { try { Get-MpComputerStatus -ErrorAction Stop } catch { $null } } }
 
-Add-Page 'security' 'Безопасность' 'Антивирус, подозрительная автозагрузка и проверки Защитником.'
-Add-Card 'Статус антивируса' 'Защитник, базы, история угроз, исключения.' { Do-AvStatus } -Primary
-Add-Card 'Поиск подозрительного' 'Автозагрузка, задачи, службы, процессы, hosts, прокси.' { Do-Suspicious }
-Add-Card 'Быстрая проверка' 'Защитник Windows: обновить базы и проверить.' { Do-QuickScan }
-Add-Card 'Полная проверка' 'Все диски, 1-3 часа.' { Do-FullScan }
-Add-Card 'Автономная проверка' 'До загрузки Windows, ловит руткиты. Перезагрузка.' { Do-OfflineScan }
-Add-Card 'Microsoft Safety Scanner' 'Официальный одноразовый сканер Microsoft.' { Do-Msert }
-Add-Card 'Второе мнение (KVRT)' 'Бесплатный сканер Kaspersky без установки.' { Do-Kvrt }
+function Show-HybridDialog {
+    $mode = Get-GraphicsMode
+    if ($mode -eq 'hybrid') { Show-Info 'Уже гибридный режим: экран на встроенной Radeon 780M, RTX 4070 спит, пока не запущена игра. Ничего делать не нужно.' 'Режим графики'; return }
+    $msg = "Сейчас: $(Get-GraphicsModeText).`n`n" +
+           "КАК ВКЛЮЧИТЬ ГИБРИДНЫЙ РЕЖИМ:`n" +
+           "1. Панель управления NVIDIA -> Дисплей -> «Управление режимом дисплея» -> «Оптимус NVIDIA» (или «Автоматический выбор») -> перезагрузка.`n" +
+           "2. Нет такого пункта - переключатель GPU / MUX / Hybrid в фирменной утилите ноутбука или в BIOS (Graphics Mode -> Hybrid / MSHybrid).`n" +
+           "3. Монитор по HDMI обычно подключён к RTX 4070 - на батарее отключайте его.`n`n" +
+           "Для игр от сети можно вернуть «Только дискретная» (+5..15% FPS).`n`nОткрыть Панель управления NVIDIA?"
+    if (Ask-User $msg 'Режим графики') { Open-NvidiaPanel }
+}
 
-Add-Page 'tests' 'Тесты' 'Нагрузка и проверка стабильности. Подключите зарядку.'
-Add-Card 'Стресс CPU 1 мин' 'Быстрая проверка частот и охлаждения.' { Start-CpuStress 60 }
-Add-Card 'Стресс CPU 10 мин' 'Длительная нагрузка: троттлинг и стабильность.' { Start-CpuStress 600 }
-Add-Card 'Остановить стресс' 'Прервать тест и показать итог.' { Stop-CpuStress }
-Add-Card 'Тест памяти' 'Средство проверки памяти Windows. Перезагрузка.' { Do-RamTest }
-Add-Card 'Скорость диска' 'Встроенный тест winsat.' { Do-DiskSpeed }
+function Set-GraphicsRow($r) {
+    switch (Get-GraphicsMode) {
+        'hybrid'   { Set-Row $r 1 'гибридный' 'Экран на встроенной Radeon 780M, RTX 4070 спит, пока не запущена игра.' -Action 'Подробнее' }
+        'dgpu'     { Set-Row $r 3 'только RTX 4070' 'Видеокарта не засыпает никогда - главный расход батареи. Для батареи переключите на гибридный.' -Action 'Как переключить' }
+        'external' { Set-Row $r 2 'внешний монитор на RTX 4070' 'Пока монитор подключён, видеокарта не засыпает. На батарее отключайте его.' -Action 'Подробнее' }
+        default    { Set-Row $r 5 'NVIDIA не видна' 'Драйвер видеокарты не установлен или видеокарта отключена.' -Action '' }
+    }
+}
 
-Add-Page 'oc' 'Разгон' 'Андервольт и разгон RTX 4070 через MSI Afterburner.'
-Add-Card 'Гайд по разгону' 'Пошагово: частоты, память, андервольт.' { Do-OcGuide } -Primary
-Add-Card 'Установить утилиты' 'HWiNFO, Afterburner, OCCT, FurMark и другие через winget.' { Do-Tools }
-Add-Card 'Запустить Afterburner' 'Открыть MSI Afterburner, если установлен.' { Do-Afterburner }
+# ----- настройки с переключателем -----
+# Get возвращает @{ On; Value; Na }. Apply включает (с записью исходных значений), Off - ставит обычные значения,
+# если откатывать нечего (например, настройку поменяли не мы).
+$script:Items = [ordered]@{}
+function Def-Item([string]$cat, [string]$key, [string]$title, [string]$desc, [bool]$rec, [scriptblock]$get, [scriptblock]$apply, [scriptblock]$off, [string]$note = '') {
+    $it = @{ Cat = $cat; Key = $key; Title = $title; Desc = $desc; Rec = $rec; Get = $get; Apply = $apply; Off = $off; Note = $note }
+    $script:Items["$cat`:$key"] = $it
+    $it
+}
+function Get-ItemState($it) {
+    $g = & $it.Get
+    if ($null -eq $g) { $g = @{ Na = $true } }
+    $g
+}
+function Set-Option($it, [bool]$on) {
+    $cat = "$($it.Cat):$($it.Key)"
+    if ($on) { $script:Cat = $cat; & $it.Apply }
+    else {
+        $script:Cat = $null
+        $n = Undo-Journal $cat
+        if (-not $n -and $it.Off) { & $it.Off }
+    }
+    $script:Cat = $null
+    [void][LTK.Pwr]::Apply()
+}
+function Add-ItemRow($it) {
+    $r = Add-Row $it.Title $it.Desc -Switch -Load {
+        param($r)
+        $it = $r.Tag.Item
+        $g = Get-ItemState $it
+        if ($g.Na) { Set-Row $r 5 $(if ($g.Value) { $g.Value } else { 'нет на этом ноутбуке' }) -On $false; return }
+        $st = if ($g.On) { 1 } elseif ($it.Rec) { 2 } else { 0 }
+        Set-Row $r $st "$($g.Value)" -On ([bool]$g.On)
+    } -Click {
+        param($r)
+        $it = $r.Tag.Item
+        $want = -not $r.On
+        Set-Option $it $want
+        $msg = "$($it.Title): $(if ($want) { 'включено' } else { 'выключено' })"
+        if ($it.Note) { $msg += ". $($it.Note)" }
+        Set-Status $msg $cOk
+    }
+    $r.Tag.Item = $it
+    $r
+}
+function Get-Summary([string]$cat) {
+    $all = @($script:Items.Values | Where-Object { $_.Cat -eq $cat -and $_.Rec })
+    $on = 0; $total = 0
+    foreach ($it in $all) { $g = Get-ItemState $it; if ($g.Na) { continue }; $total++; if ($g.On) { $on++ } }
+    @{ On = $on; Total = $total }
+}
+function Set-AllItems([string]$cat, [bool]$on) {
+    $n = 0
+    foreach ($it in @($script:Items.Values | Where-Object { $_.Cat -eq $cat })) {
+        if ($on -and -not $it.Rec) { continue }
+        $g = Get-ItemState $it
+        if ($g.Na -or [bool]$g.On -eq $on) { continue }
+        Set-Status "$(if ($on) { 'Включаю' } else { 'Выключаю' }): $($it.Title)..." $accent
+        [Windows.Forms.Application]::DoEvents()
+        Set-Option $it $on
+        $n++
+    }
+    # частично применённые настройки (например, Windows не дала включить гибернацию) тоже откатываем
+    if (-not $on) { $n += Undo-Journal "$cat*" }
+    $n
+}
 
-Add-Page 'install' 'Переустановка' 'Чистая Windows вместо «сборок» - пошагово.'
-Add-Card 'Как поставить чистую Windows' 'План переустановки и что сохранить заранее.' { Do-WinGuide } -Primary
-Add-Card 'Бэкап драйверов' 'Сохранить все драйверы в папку отчётов.' { Do-DriverBackup }
-Add-Card 'Скачать Windows 11' 'Официальная страница Microsoft.' { Start-Process 'https://www.microsoft.com/software-download/windows11'; Out-Box 'Открыт сайт Microsoft.' }
+# --- батарея ---
+function Disable-AgentPart([hashtable]$changes) {
+    $cfg = Get-AgentConfig
+    if (-not $cfg -or -not (Test-AgentTask)) { return }
+    $left = @{ Refresh = [bool]$cfg.Refresh; DcOverlay = "$($cfg.DcOverlay)"; AcOverlay = "$($cfg.AcOverlay)" }
+    foreach ($k in $changes.Keys) { $left[$k] = $changes[$k] }
+    if (-not $left.Refresh -and -not $left.DcOverlay -and -not $left.AcOverlay) { Uninstall-Agent }
+    else {
+        Install-Agent $changes
+        if ($changes.ContainsKey('Refresh') -and -not $changes.Refresh) { $rates = @([LTK.Disp]::Rates()); if ($rates.Count) { [void][LTK.Disp]::Set($rates[-1]) } }
+    }
+    if ($changes.ContainsKey('DcOverlay') -and [LTK.Pwr]::OnAC() -eq 0) { [void][LTK.Pwr]::SetOverlay($OV_BAL) }
+}
+function Test-AgentFlag([string]$name) {
+    $cfg = Get-AgentConfig
+    if (-not $cfg -or -not (Test-AgentTask)) { return $null }
+    $cfg.$name
+}
+function Pow-Item([string]$sub, [string]$set) { $v = Get-Pow $sub $set; if ($v -lt 0) { $null } else { $v } }
+
+[void](Def-Item 'battery' 'refresh' 'Экран 60 Гц на батарее' '240 Гц заметно тратят заряд. При подключении зарядки частота сама вернётся на максимум.' $true {
+    $rates = @([LTK.Disp]::Rates())
+    if ($rates.Count -lt 2) { return @{ Na = $true; Value = 'частоту не поменять' } }
+    $on = [bool](Test-AgentFlag 'Refresh')
+    @{ On = $on; Value = $(if ($on) { "60 Гц на батарее, $($rates[-1]) Гц от сети" } else { "всегда $([LTK.Disp]::Current()) Гц" }) }
+} { Install-Agent @{ Refresh = $true; DcHz = 60 } } { Disable-AgentPart @{ Refresh = $false } })
+
+[void](Def-Item 'battery' 'overlay' 'Экономичный режим Windows на батарее' 'Без зарядки - «Лучшая энергоэффективность», от сети - «Максимальная производительность». Переключается само.' $true {
+    $on = ((Test-AgentFlag 'DcOverlay') -eq $OV_EFF)
+    @{ On = $on; Value = $(if ($on) { 'переключается само' } else { 'не переключается' }) }
+} { Install-Agent @{ DcOverlay = $OV_EFF; AcOverlay = $OV_PERF }; if ([LTK.Pwr]::OnAC() -eq 0) { [void][LTK.Pwr]::SetOverlay($OV_EFF) } } { Disable-AgentPart @{ DcOverlay = '' } })
+
+[void](Def-Item 'battery' 'boost' 'Процессор без турбобуста на батарее' 'До 3,8 ГГц вместо 5,1: в браузере и видео почти незаметно, а работает заметно дольше. От сети турбо остаётся.' $true {
+    $v = Pow-Item $PW.Proc $PW.Boost
+    if ($null -eq $v) { return @{ Na = $true } }
+    @{ On = ($v -eq 0); Value = $(if ($v -eq 0) { 'турбо выключено' } else { 'турбо включено' }) }
+} { Set-Pow $PW.Proc $PW.Boost 0 'Турбобуст на батарее: выкл'; powercfg -attributes $PW.Proc $PW.Boost -ATTRIB_HIDE 2>&1 | Out-Null } { Set-Pow $PW.Proc $PW.Boost 2 'Турбобуст на батарее: вкл' })
+
+[void](Def-Item 'battery' 'epp' 'Процессор бережёт энергию' 'Частота мягче поднимается в лёгких задачах.' $true {
+    $v = Pow-Item $PW.Proc $PW.Epp
+    if ($null -eq $v) { return @{ Na = $true } }
+    @{ On = ($v -ge 70); Value = "приоритет экономии $v %" }
+} { Set-Pow $PW.Proc $PW.Epp 80 'Энергоэффективность процессора: 80%' } { Set-Pow $PW.Proc $PW.Epp 50 'Энергоэффективность процессора: 50%' })
+
+[void](Def-Item 'battery' 'saver' 'Экономия энергии - сразу без зарядки' 'Windows приглушает фоновые задачи и синхронизацию. Обычно это включается только при 20%.' $true {
+    $v = Pow-Item $PW.Saver $PW.SaverAt
+    if ($null -eq $v) { return @{ Na = $true } }
+    @{ On = ($v -ge 100); Value = $(if ($v -ge 100) { 'с первой минуты' } else { "только при $v %" }) }
+} { Set-Pow $PW.Saver $PW.SaverAt 100 'Экономия энергии: всегда на батарее' } { Set-Pow $PW.Saver $PW.SaverAt 20 'Экономия энергии: при 20%' })
+
+[void](Def-Item 'battery' 'screen' 'Экран гаснет через 3 мин, сон через 10 мин' 'Только на батарее. От сети - как было.' $true {
+    $so = Pow-Item $PW.Video $PW.ScreenOff; $sl = Pow-Item $PW.Sleep $PW.SleepAfter
+    if ($null -eq $so) { return @{ Na = $true } }
+    $on = ($so -gt 0 -and $so -le 300 -and $null -ne $sl -and $sl -gt 0 -and $sl -le 900)
+    @{ On = $on; Value = "экран $(Fmt-Sec $so) · сон $(Fmt-Sec $sl)" }
+} { Set-Pow $PW.Video $PW.ScreenOff 180 'Экран на батарее: 3 мин'; Set-Pow $PW.Sleep $PW.SleepAfter 600 'Сон на батарее: 10 мин' } {
+    Set-Pow $PW.Video $PW.ScreenOff 300 'Экран на батарее: 5 мин'; Set-Pow $PW.Sleep $PW.SleepAfter 900 'Сон на батарее: 15 мин' })
+
+[void](Def-Item 'battery' 'standby' 'Не разряжается во сне' 'Во сне без интернета, через час сна - гибернация: можно оставить в рюкзаке на ночь.' $true {
+    $ns = Pow-Item $PW.None $PW.NetStandby; $ha = Pow-Item $PW.Sleep $PW.HibAfter
+    if ($null -eq $ns -and $null -eq $ha) { return @{ Na = $true } }
+    $hib = ((Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\Power' -ErrorAction SilentlyContinue).HibernateEnabled -eq 1)
+    $on = ($null -eq $ns -or $ns -eq 0) -and $hib -and $ha -gt 0
+    @{ On = $on; Value = $(if ($hib -and $ha -gt 0) { "гибернация через $(Fmt-Sec $ha)" } else { 'гибернации нет' }) }
+} {
+    $pk = Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\Power' -ErrorAction SilentlyContinue
+    Save-Original 'hib' @{ Kind = 'hib'; WasOn = ($pk.HibernateEnabled -eq 1); WasType = $pk.HiberFileType }
+    if ($pk.HibernateEnabled -ne 1) { powercfg /hibernate on 2>&1 | Out-Null }
+    if ($pk.HiberFileType -eq 1) { powercfg /h /type full 2>&1 | Out-Null }
+    Set-Pow $PW.None $PW.NetStandby 0 'Интернет во сне на батарее: выкл'
+    Set-Pow $PW.Sleep $PW.HibAfter 3600 'Гибернация через 1 час сна'
+} { Set-Pow $PW.None $PW.NetStandby 2 'Интернет во сне: решает Windows'; Set-Pow $PW.Sleep $PW.HibAfter 0 'Гибернация после сна: никогда' })
+
+[void](Def-Item 'battery' 'devices' 'Энергосбережение Wi-Fi, SSD и USB' 'Простаивающие устройства засыпают. Если на батарее начнёт подтормаживать мышь или Wi-Fi - выключите.' $true {
+    $a = Pow-Item $PW.Pcie $PW.Aspm; $w = Pow-Item $PW.Wifi $PW.WifiSave
+    if ($null -eq $a -and $null -eq $w) { return @{ Na = $true } }
+    $on = ($null -eq $a -or $a -eq 2) -and ($null -eq $w -or $w -eq 3)
+    @{ On = $on; Value = $(if ($on) { 'максимальная экономия' } else { 'частичная' }) }
+} {
+    Set-Pow $PW.Pcie $PW.Aspm 2 'PCIe на батарее: максимальная экономия'
+    Set-Pow $PW.Usb $PW.UsbSuspend 1 'USB на батарее: засыпают'
+    Set-Pow $PW.Wifi $PW.WifiSave 3 'Wi-Fi на батарее: максимальная экономия'
+} { Set-Pow $PW.Pcie $PW.Aspm 1 'PCIe: умеренно'; Set-Pow $PW.Wifi $PW.WifiSave 1 'Wi-Fi: умеренно' })
+
+[void](Def-Item 'battery' 'video' 'Видео в экономичном режиме' 'YouTube и фильмы на батарее воспроизводятся с упором на экономию.' $true {
+    $v = Pow-Item $PW.Media $PW.VideoPlay
+    if ($null -eq $v) { return @{ Na = $true } }
+    @{ On = ($v -eq 2); Value = $(switch ($v) { 0 { 'упор на качество' } 1 { 'баланс' } default { 'упор на экономию' } }) }
+} { Set-Pow $PW.Media $PW.VideoPlay 2 'Видео на батарее: экономия' } { Set-Pow $PW.Media $PW.VideoPlay 1 'Видео на батарее: баланс' })
+
+[void](Def-Item 'battery' 'gpuprefs' 'Браузеры и мессенджеры - без RTX 4070' 'Работают на встроенной графике и не будят видеокарту (проснувшаяся RTX 4070 тратит несколько ватт).' $true {
+    $apps = @(Get-LowPowerApps)
+    if (-not $apps.Count) { return @{ Na = $true; Value = 'браузеры не найдены' } }
+    $k = Get-ItemProperty 'HKCU:\Software\Microsoft\DirectX\UserGpuPreferences' -ErrorAction SilentlyContinue
+    $n = @($apps | Where-Object { $k -and "$($k.$_)" -match 'GpuPreference=1' }).Count
+    $names = ($apps | ForEach-Object { [IO.Path]::GetFileNameWithoutExtension($_) }) -join ', '
+    @{ On = ($n -eq $apps.Count); Value = $(if ($n -eq $apps.Count) { $names } else { "$n из $($apps.Count): $names" }) }
+} { foreach ($a in @(Get-LowPowerApps)) { Set-Reg 'HKCU:\Software\Microsoft\DirectX\UserGpuPreferences' $a 'GpuPreference=1;' 'String' } } {
+    foreach ($a in @(Get-LowPowerApps)) { Remove-ItemProperty 'HKCU:\Software\Microsoft\DirectX\UserGpuPreferences' -Name $a -ErrorAction SilentlyContinue } } 'Перезапустите браузеры')
+
+[void](Def-Item 'battery' 'edge' 'Edge не висит в фоне' 'После закрытия Edge не остаётся в памяти. В его настройках появится «Управляется организацией» - это нормально.' $true {
+    $k = Get-ItemProperty 'HKLM:\SOFTWARE\Policies\Microsoft\Edge' -ErrorAction SilentlyContinue
+    $on = ($k -and $k.StartupBoostEnabled -eq 0 -and $k.BackgroundModeEnabled -eq 0)
+    @{ On = $on; Value = $(if ($on) { 'фон выключен' } else { 'работает в фоне' }) }
+} { Set-Reg 'HKLM:\SOFTWARE\Policies\Microsoft\Edge' 'StartupBoostEnabled' 0; Set-Reg 'HKLM:\SOFTWARE\Policies\Microsoft\Edge' 'BackgroundModeEnabled' 0 } {
+    foreach ($n in 'StartupBoostEnabled', 'BackgroundModeEnabled') { Remove-ItemProperty 'HKLM:\SOFTWARE\Policies\Microsoft\Edge' -Name $n -ErrorAction SilentlyContinue } })
+
+[void](Def-Item 'battery' 'bgapps' 'Запретить фоновую работу приложений Store' 'Дополнительно (не входит в общий переключатель): экономит ещё, но WhatsApp, Почта и т.п. не пришлют уведомление, пока закрыты.' $false {
+    $v = (Get-ItemProperty 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\AppPrivacy' -ErrorAction SilentlyContinue).LetAppsRunInBackground
+    @{ On = ($v -eq 2); Value = $(if ($v -eq 2) { 'запрещено' } else { 'разрешено' }) }
+} { Set-Reg 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\AppPrivacy' 'LetAppsRunInBackground' 2 } {
+    Remove-ItemProperty 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\AppPrivacy' -Name 'LetAppsRunInBackground' -ErrorAction SilentlyContinue })
+
+# --- Windows ---
+$adv = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced'
+function RegV([string]$path, [string]$name) { (Get-ItemProperty $path -Name $name -ErrorAction SilentlyContinue).$name }
+
+[void](Def-Item 'windows' 'gamemode' 'Игровой режим' 'Игре - приоритет, обновления и фоновые задачи не мешают.' $true {
+    $v = RegV 'HKCU:\Software\Microsoft\GameBar' 'AutoGameModeEnabled'
+    @{ On = ($null -eq $v -or $v -eq 1); Value = '' }
+} { Set-Reg 'HKCU:\Software\Microsoft\GameBar' 'AutoGameModeEnabled' 1; Set-Reg 'HKCU:\Software\Microsoft\GameBar' 'AllowAutoGameMode' 1 } {
+    Set-Reg 'HKCU:\Software\Microsoft\GameBar' 'AutoGameModeEnabled' 0 })
+
+[void](Def-Item 'windows' 'dvr' 'Без фоновой записи игр' 'Xbox Game Bar не пишет игру постоянно - больше FPS. Сам Game Bar (Win+G) остаётся.' $true {
+    @{ On = ((RegV 'HKCU:\System\GameConfigStore' 'GameDVR_Enabled') -eq 0); Value = '' }
+} { Set-Reg 'HKCU:\System\GameConfigStore' 'GameDVR_Enabled' 0; Set-Reg 'HKCU:\Software\Microsoft\Windows\CurrentVersion\GameDVR' 'AppCaptureEnabled' 0 } {
+    Set-Reg 'HKCU:\System\GameConfigStore' 'GameDVR_Enabled' 1; Set-Reg 'HKCU:\Software\Microsoft\Windows\CurrentVersion\GameDVR' 'AppCaptureEnabled' 1 })
+
+[void](Def-Item 'windows' 'hags' 'Аппаратное планирование GPU' 'Меньше задержка, нужно для DLSS Frame Generation.' $true {
+    @{ On = ((RegV 'HKLM:\SYSTEM\CurrentControlSet\Control\GraphicsDrivers' 'HwSchMode') -eq 2); Value = '' }
+} { Set-Reg 'HKLM:\SYSTEM\CurrentControlSet\Control\GraphicsDrivers' 'HwSchMode' 2 } { Set-Reg 'HKLM:\SYSTEM\CurrentControlSet\Control\GraphicsDrivers' 'HwSchMode' 1 } 'Нужна перезагрузка')
+
+[void](Def-Item 'windows' 'telemetry' 'Телеметрия на минимуме' 'Меньше фоновой отправки данных в Microsoft - и меньше расход батареи.' $true {
+    $s = Get-Service 'DiagTrack' -ErrorAction SilentlyContinue
+    @{ On = ((RegV 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\DataCollection' 'AllowTelemetry') -eq 0 -and (-not $s -or "$($s.StartType)" -eq 'Disabled')); Value = '' }
+} { Set-Reg 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\DataCollection' 'AllowTelemetry' 0; foreach ($s in 'DiagTrack', 'dmwappushservice') { [void](Set-Svc $s 'Disabled') } } {
+    Remove-ItemProperty 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\DataCollection' -Name 'AllowTelemetry' -ErrorAction SilentlyContinue
+    Set-Service 'DiagTrack' -StartupType Automatic -ErrorAction SilentlyContinue; Set-Service 'dmwappushservice' -StartupType Manual -ErrorAction SilentlyContinue })
+
+$CdmNames = 'SilentInstalledAppsEnabled', 'SystemPaneSuggestionsEnabled', 'SoftLandingEnabled', 'SubscribedContent-338388Enabled',
+            'SubscribedContent-338389Enabled', 'SubscribedContent-338393Enabled', 'SubscribedContent-353694Enabled',
+            'SubscribedContent-353696Enabled', 'SubscribedContent-310093Enabled'
+$Cdm = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\ContentDeliveryManager'
+[void](Def-Item 'windows' 'ads' 'Без рекламы и «рекомендаций»' 'Рекламный ID, предложения в Пуске и Параметрах, тихая установка игр вроде Candy Crush.' $true {
+    @{ On = ((RegV 'HKCU:\Software\Microsoft\Windows\CurrentVersion\AdvertisingInfo' 'Enabled') -eq 0 -and (RegV $Cdm 'SilentInstalledAppsEnabled') -eq 0); Value = '' }
+} {
+    Set-Reg 'HKCU:\Software\Microsoft\Windows\CurrentVersion\AdvertisingInfo' 'Enabled' 0
+    Set-Reg 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Privacy' 'TailoredExperiencesWithDiagnosticDataEnabled' 0
+    foreach ($n in $CdmNames) { Set-Reg $Cdm $n 0 }
+    Set-Reg $adv 'Start_IrisRecommendations' 0
+} { Set-Reg 'HKCU:\Software\Microsoft\Windows\CurrentVersion\AdvertisingInfo' 'Enabled' 1; foreach ($n in $CdmNames) { Set-Reg $Cdm $n 1 } } 'Применится после перезапуска Проводника')
+
+[void](Def-Item 'windows' 'bing' 'Поиск в Пуске без Bing' 'Ищет только на компьютере - быстрее и без лишнего трафика.' $true {
+    @{ On = ((RegV 'HKCU:\Software\Policies\Microsoft\Windows\Explorer' 'DisableSearchBoxSuggestions') -eq 1); Value = '' }
+} { Set-Reg 'HKCU:\Software\Policies\Microsoft\Windows\Explorer' 'DisableSearchBoxSuggestions' 1; Set-Reg 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Search' 'BingSearchEnabled' 0 } {
+    Remove-ItemProperty 'HKCU:\Software\Policies\Microsoft\Windows\Explorer' -Name 'DisableSearchBoxSuggestions' -ErrorAction SilentlyContinue
+    Remove-ItemProperty 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Search' -Name 'BingSearchEnabled' -ErrorAction SilentlyContinue } 'Применится после перезапуска Проводника')
+
+[void](Def-Item 'windows' 'widgets' 'Без виджетов и новостей' 'Убирает фоновые процессы виджетов на панели задач.' $true {
+    @{ On = ((RegV 'HKLM:\SOFTWARE\Policies\Microsoft\Dsh' 'AllowNewsAndInterests') -eq 0); Value = '' }
+} { Set-Reg 'HKLM:\SOFTWARE\Policies\Microsoft\Dsh' 'AllowNewsAndInterests' 0 } {
+    Remove-ItemProperty 'HKLM:\SOFTWARE\Policies\Microsoft\Dsh' -Name 'AllowNewsAndInterests' -ErrorAction SilentlyContinue } 'Применится после перезапуска Проводника')
+
+[void](Def-Item 'windows' 'copilot' 'Без Copilot' 'Убирает кнопку и отключает Copilot.' $true {
+    @{ On = ((RegV 'HKCU:\Software\Policies\Microsoft\Windows\WindowsCopilot' 'TurnOffWindowsCopilot') -eq 1); Value = '' }
+} {
+    Set-Reg 'HKCU:\Software\Policies\Microsoft\Windows\WindowsCopilot' 'TurnOffWindowsCopilot' 1
+    Set-Reg 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsCopilot' 'TurnOffWindowsCopilot' 1
+    Set-Reg $adv 'ShowCopilotButton' 0
+} {
+    foreach ($p in 'HKCU:\Software\Policies\Microsoft\Windows\WindowsCopilot', 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsCopilot') {
+        Remove-ItemProperty $p -Name 'TurnOffWindowsCopilot' -ErrorAction SilentlyContinue }
+} 'Применится после перезапуска Проводника')
+
+[void](Def-Item 'windows' 'delivery' 'Не раздавать обновления чужим компьютерам' 'Windows только скачивает обновления, а не отдаёт их через ваш интернет.' $true {
+    @{ On = ((RegV 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\DeliveryOptimization' 'DODownloadMode') -eq 0); Value = '' }
+} { Set-Reg 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\DeliveryOptimization' 'DODownloadMode' 0 } {
+    Remove-ItemProperty 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\DeliveryOptimization' -Name 'DODownloadMode' -ErrorAction SilentlyContinue })
+
+[void](Def-Item 'windows' 'fileext' 'Показывать расширения файлов' 'Защита от вирусов вида «фото.jpg.exe».' $true {
+    @{ On = ((RegV $adv 'HideFileExt') -eq 0); Value = '' }
+} { Set-Reg $adv 'HideFileExt' 0 } { Set-Reg $adv 'HideFileExt' 1 } 'Применится после перезапуска Проводника')
+
+[void](Def-Item 'windows' 'transp' 'Без прозрачности окон' 'Дополнительно: чуть меньше нагрузка на графику, но интерфейс проще.' $false {
+    @{ On = ((RegV 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize' 'EnableTransparency') -eq 0); Value = '' }
+} { Set-Reg 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize' 'EnableTransparency' 0 } {
+    Set-Reg 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize' 'EnableTransparency' 1 })
+
+$CtxKey = 'HKCU:\Software\Classes\CLSID\{86ca1aa0-34aa-4e8b-a509-50c905bae2a2}'
+[void](Def-Item 'windows' 'ctxmenu' 'Классическое меню правой кнопки' 'Дополнительно: сразу полное меню, как в Windows 10, без «Показать дополнительные параметры».' $false {
+    @{ On = (Test-Path "$CtxKey\InprocServer32"); Value = '' }
+} { Set-Reg "$CtxKey\InprocServer32" '(default)' '' 'String' } { Remove-Item $CtxKey -Recurse -Force -ErrorAction SilentlyContinue } 'Применится после перезапуска Проводника')
+
+function Get-BloatFound {
+    Cached 'bloat' 60 {
+        $names = @($Bloat.Keys)
+        $pk = @(Get-AppxPackage -ErrorAction SilentlyContinue | Where-Object { $_.Name -in $names } | Select-Object -ExpandProperty Name -Unique)
+        , $pk
+    }
+}
+
+# ----- утилиты: скачать и сразу запустить -----
+$WgLinks = Join-Path $env:LOCALAPPDATA 'Microsoft\WinGet\Links'
+$Tools = @(
+    @{ Name = 'HWiNFO64'; Desc = 'Все температуры, частоты и датчики. Главная программа для проверки перегрева.'; Id = 'REALiX.HWiNFO'; Match = 'HWiNFO'; Exe = 'HWiNFO64.exe'; Rec = $true
+       Paths = @("$env:ProgramFiles\HWiNFO64\HWiNFO64.exe") }
+    @{ Name = 'MSI Afterburner'; Desc = 'Разгон и андервольт RTX 4070, мониторинг в играх.'; Id = 'Guru3D.Afterburner'; Match = 'Afterburner'; Exe = 'MSIAfterburner.exe'; Rec = $true
+       Paths = @("${env:ProgramFiles(x86)}\MSI Afterburner\MSIAfterburner.exe", "$env:ProgramFiles\MSI Afterburner\MSIAfterburner.exe") }
+    @{ Name = 'OCCT'; Desc = 'Стресс-тест процессора, видеокарты, памяти и блока питания.'; Id = 'OCBase.OCCT.Personal'; Match = '^OCCT'; Exe = 'OCCT.exe'; Rec = $true
+       Paths = @("$env:ProgramFiles\OCCT\OCCT.exe") }
+    @{ Name = 'FurMark 2'; Desc = 'Нагрузка на видеокарту - для замера 140 Вт.'; Id = 'Geeks3D.FurMark.2'; Match = 'FurMark'; Exe = 'FurMark_GUI.exe'; Rec = $true
+       Paths = @("$env:ProgramFiles\Geeks3D\FurMark2_x64\FurMark_GUI.exe", "$env:ProgramFiles\Geeks3D\FurMark2_x64\furmark.exe") }
+    @{ Name = 'CrystalDiskInfo'; Desc = 'Здоровье и износ SSD.'; Id = 'CrystalDewWorld.CrystalDiskInfo'; Match = 'CrystalDiskInfo'; Exe = 'DiskInfo64.exe'; Rec = $true
+       Paths = @("$env:ProgramFiles\CrystalDiskInfo\DiskInfo64.exe") }
+    @{ Name = 'CrystalDiskMark'; Desc = 'Скорость SSD.'; Id = 'CrystalDewWorld.CrystalDiskMark'; Match = 'CrystalDiskMark'; Exe = 'DiskMark64.exe'; Rec = $false
+       Paths = @("$env:ProgramFiles\CrystalDiskMark8\DiskMark64.exe") }
+    @{ Name = 'Cinebench R23'; Desc = 'Тест производительности процессора.'; Id = 'Maxon.CinebenchR23'; Match = 'Cinebench'; Exe = 'Cinebench.exe'; Rec = $false; Paths = @() }
+    @{ Name = 'CPU-Z'; Desc = 'Процессор и память: модель, частоты, тайминги.'; Id = 'CPUID.CPU-Z'; Match = 'CPU-Z'; Exe = 'cpuz.exe'; Rec = $false
+       Paths = @("$env:ProgramFiles\CPUID\CPU-Z\cpuz.exe") }
+    @{ Name = 'GPU-Z'; Desc = 'Видеокарта: модель, частоты, лимиты мощности.'; Id = 'TechPowerUp.GPU-Z'; Match = 'GPU-Z'; Exe = 'GPU-Z.exe'; Rec = $false
+       Paths = @("$env:ProgramFiles\GPU-Z\GPU-Z.exe", "${env:ProgramFiles(x86)}\GPU-Z\GPU-Z.exe") }
+    @{ Name = 'Autoruns'; Desc = 'Вся автозагрузка Windows (Microsoft Sysinternals).'; Id = 'Microsoft.Sysinternals.Autoruns'; Match = '^Autoruns'; Exe = 'Autoruns64.exe'; Rec = $false; Paths = @() }
+    @{ Name = '7-Zip'; Desc = 'Архиватор.'; Id = '7zip.7zip'; Match = '^7-Zip'; Exe = '7zFM.exe'; Rec = $false; Paths = @("$env:ProgramFiles\7-Zip\7zFM.exe") }
+)
+
+function Get-InstalledApps {
+    Cached 'apps' 10 {
+        $l = @()
+        foreach ($k in 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*', 'HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*',
+                       'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*') {
+            $l += @(Get-ItemProperty $k -ErrorAction SilentlyContinue | Where-Object { $_.DisplayName } | Select-Object DisplayName, DisplayIcon, InstallLocation)
+        }
+        , $l
+    }
+}
+function Get-ToolCandidates($t) {
+    $c = @($t.Paths) + @(Join-Path $WgLinks $t.Exe)
+    foreach ($a in @(Get-InstalledApps | Where-Object { $_.DisplayName -match $t.Match })) {
+        if ($a.InstallLocation) { $c += Join-Path $a.InstallLocation $t.Exe }
+        $ico = "$($a.DisplayIcon)".Trim('"') -replace ',\s*-?\d+$', ''
+        if ($ico -like '*.exe') { $c += $ico }
+    }
+    $c
+}
+function Find-Tool($t) { Get-ToolCandidates $t | Where-Object { $_ -and (Test-Path $_) } | Select-Object -First 1 }
+function Start-Tool($t) {
+    $p = Find-Tool $t
+    if ($p) { Start-Process $p; Set-Status "Запущено: $($t.Name)" $cOk; return }
+    if (-not (Test-Winget)) { return }
+    # Скачивание идёт в отдельном окне; после установки программа запускается сама.
+    $cands = (@(Get-ToolCandidates $t) + @("$env:ProgramFiles\$($t.Name)\$($t.Exe)") | ForEach-Object { "'$_'" }) -join ','
+    Start-Console "Скачиваю $($t.Name)" ("Write-Host 'Скачиваю и устанавливаю $($t.Name)...'; " +
+        "winget install -e --id $($t.Id) --silent --accept-package-agreements --accept-source-agreements; " +
+        "`$p = @($cands) | Where-Object { Test-Path `$_ } | Select-Object -First 1; " +
+        "if (`$p) { Write-Host 'Запускаю...'; Start-Process `$p } else { Write-Host 'Установлено - запустите из меню Пуск.' }")
+}
+
+# ================= ГЛАВНАЯ =================
+Add-Page 'home' 'Главная' 'home' 'Состояние ноутбука проверяется само. Зелёное - в порядке, жёлтое и красное - нажмите кнопку справа.'
+
+[void](Add-Row 'Видеокарта 140 Вт' '' 'Открыть' -Load {
+    param($r)
+    $g = Get-GpuInfo
+    if (-not $g.Smi) { Set-Row $r 3 'драйвер NVIDIA не найден' 'Установите драйвер видеокарты - раздел «Видеокарта».'; return }
+    if ($g.Db -ne 'ok') { Set-Row $r 3 'сейчас до 115 Вт' 'Не работает Dynamic Boost (+25 Вт). На странице «Видеокарта» - кнопка «Исправить».'; return }
+    if (-not $g.AC) { Set-Row $r 1 'Dynamic Boost работает' 'Мощность проверю, когда подключите зарядку (на батарее опрос будит видеокарту).'; return }
+    if ($g.Max -ge 139) { Set-Row $r 1 "до $([int]$g.Max) Вт" 'Dynamic Boost работает: в тяжёлых играх от сети - до 140 Вт.' }
+    else { Set-Row $r 2 "до $([int]$g.Max) Вт" 'Прошивка ноутбука ограничивает мощность.' }
+} -Click { Show-Page 'gpu' })
+
+$script:HomeBat = Add-Row 'Экономия на батарее' '' 'Открыть' -Load {
+    param($r)
+    $s = Get-Summary 'battery'
+    if ($s.On -eq $s.Total) { Set-Row $r 1 'включена' 'Отключили зарядку - ноутбук сам переходит на минимальный расход.' -Action 'Открыть' }
+    elseif ($s.On -eq 0) { Set-Row $r 3 'выключена' 'Ноутбук на батарее работает как от сети и быстро садится. Включается одной кнопкой.' -Action 'Включить' }
+    else { Set-Row $r 2 "включено $($s.On) из $($s.Total)" 'Часть настроек экономии выключена.' -Action 'Открыть' }
+} -Click {
+    param($r)
+    if ($r.Action -eq 'Включить') { $n = Set-AllItems 'battery' $true; Set-Status "Экономия на батарее включена (изменено: $n)." $cOk; Queue-Page 'battery' }
+    else { Show-Page 'battery' }
+}
+
+[void](Add-Row 'Режим графики' '' 'Как переключить' -Load { param($r) Set-GraphicsRow $r } -Click { Show-HybridDialog })
+
+[void](Add-Row 'Оптимизация Windows' '' 'Открыть' -Load {
+    param($r)
+    $s = Get-Summary 'windows'
+    $st = if ($s.On -eq $s.Total) { 1 } elseif ($s.On -ge $s.Total / 2) { 2 } else { 3 }
+    Set-Row $r $st "включено $($s.On) из $($s.Total)" 'Без рекламы, телеметрии, лишних фоновых процессов; игровой режим.'
+} -Click { Show-Page 'windows' })
+
+[void](Add-Row 'Защита от вирусов' '' 'Открыть' -Load {
+    param($r)
+    $m = Get-MpInfo
+    if (-not $m) { Set-Row $r 0 'другой антивирус' 'Защитник Windows выключен - видимо, стоит сторонний антивирус.'; return }
+    if (-not $m.RealTimeProtectionEnabled) { Set-Row $r 3 'защита выключена' 'Защита в реальном времени выключена!'; return }
+    $age = [int]((Get-Date) - $m.AntivirusSignatureLastUpdated).TotalDays
+    if ($age -gt 7) { Set-Row $r 2 "базы устарели ($age дн.)" 'Обновите базы - страница «Безопасность».'; return }
+    Set-Row $r 1 'работает' 'Защитник Windows включён, базы свежие.'
+} -Click { Show-Page 'security' })
+
+[void](Add-Row "Место на диске $env:SystemDrive" '' 'Очистить' -Load {
+    param($r)
+    $v = Get-Volume -DriveLetter $env:SystemDrive.TrimEnd(':') -ErrorAction SilentlyContinue
+    if (-not $v) { Set-Row $r 5 'н/д'; return }
+    $pct = [math]::Round($v.SizeRemaining * 100 / $v.Size)
+    $st = if ($pct -lt 10) { 3 } elseif ($pct -lt 20) { 2 } else { 1 }
+    Set-Row $r $st "свободно $(GB $v.SizeRemaining) из $(GB $v.Size) ГБ ($pct %)" 'Очистка удаляет временные файлы и корзину.'
+} -Click { Do-Cleanup })
+
+[void](Add-Row 'Батарея' '' 'Отчёт' -Load {
+    param($r)
+    try {
+        $design = (Get-CimInstance -Namespace root\wmi -ClassName BatteryStaticData -ErrorAction Stop | Select-Object -First 1).DesignedCapacity
+        $full = (Get-CimInstance -Namespace root\wmi -ClassName BatteryFullChargedCapacity -ErrorAction Stop | Select-Object -First 1).FullChargedCapacity
+    } catch { $design = 0 }
+    if ($design -gt 0 -and $full -gt 0) {
+        $wear = [math]::Max(0, [math]::Round(100 - $full * 100 / $design, 1))
+        $st = if ($wear -gt 30) { 3 } elseif ($wear -gt 20) { 2 } else { 1 }
+        Set-Row $r $st "износ $wear %" "Ёмкость $([math]::Round($full / 1000, 1)) из $([math]::Round($design / 1000, 1)) Вт·ч."
+    } else { Set-Row $r 0 'износ не определить' 'Подробный отчёт Windows откроется по кнопке.' }
+} -Click { Do-Battery })
+
+[void](Add-Row 'Оперативная память' '' -Load {
+    param($r)
+    $mods = @(Get-CimInstance Win32_PhysicalMemory)
+    $total = ($mods | Measure-Object Capacity -Sum).Sum
+    if ($mods.Count -eq 1) { Set-Row $r 2 "$(GB $total) ГБ, одна планка" 'Одноканальный режим - главный тормоз в играх. Вторая такая же планка DDR5-5600 даст +10..30% FPS.' }
+    else { Set-Row $r 1 "$(GB $total) ГБ, $($mods.Count) планки" 'Двухканальный режим.' }
+})
+
+[void](Add-Row 'Устройства и драйверы' '' 'Подробно' -ToLog -Load {
+    param($r)
+    $bad = @(Get-CimInstance Win32_PnPEntity -Filter 'ConfigManagerErrorCode <> 0' -ErrorAction SilentlyContinue)
+    if ($bad.Count) { Set-Row $r 2 "проблем: $($bad.Count)" (($bad | Select-Object -First 2 | ForEach-Object Name) -join ', ') }
+    else { Set-Row $r 1 'всё работает' 'Нет устройств с ошибками.' -Action '' }
+} -Click { Do-Drivers })
+
+[void](Add-Row 'Сбои за 30 дней' '' 'Подробно' -ToLog -Load {
+    param($r)
+    $since = (Get-Date).AddDays(-30)
+    $bsod = @(Get-WinEvent -FilterHashtable @{ LogName = 'System'; ProviderName = 'Microsoft-Windows-WER-SystemErrorReporting'; Id = 1001; StartTime = $since } -MaxEvents 50 -ErrorAction SilentlyContinue).Count
+    $off = @(Get-WinEvent -FilterHashtable @{ LogName = 'System'; ProviderName = 'Microsoft-Windows-Kernel-Power'; Id = 41; StartTime = $since } -MaxEvents 50 -ErrorAction SilentlyContinue).Count
+    $tdr = @(Get-WinEvent -FilterHashtable @{ LogName = 'System'; ProviderName = 'Display'; Id = 4101; StartTime = $since } -MaxEvents 50 -ErrorAction SilentlyContinue).Count
+    $sum = $bsod + $off + $tdr
+    if (-not $sum) { Set-Row $r 1 'не было' 'Синих экранов, внезапных выключений и сбоев видеодрайвера нет.' -Action ''; return }
+    Set-Row $r $(if ($bsod) { 3 } else { 2 }) "синих экранов $bsod · выключений $off · сбоев видео $tdr" 'Выключения часто бывают от зажатой кнопки питания - смотрите подробности.'
+} -Click { Do-Events })
+
+[void](Add-Row 'Точка восстановления' 'Снимок системы: если что-то пойдёт не так - Win+R -> rstrui.' 'Создать' -Load {
+    param($r)
+    $p = Get-ComputerRestorePoint -ErrorAction SilentlyContinue | Sort-Object SequenceNumber | Select-Object -Last 1
+    if (-not $p) { Set-Row $r 2 'нет ни одной'; return }
+    $d = [Management.ManagementDateTimeConverter]::ToDateTime($p.CreationTime)
+    $age = [int]((Get-Date) - $d).TotalDays
+    Set-Row $r $(if ($age -gt 30) { 2 } else { 1 }) "последняя: $($d.ToString('dd.MM.yyyy'))"
+} -Click { Do-Restore; Set-Status 'Точка восстановления создана.' $cOk })
+
+[void](Add-Row 'Полная проверка и отчёт' 'Все проверки подряд с подробностями; отчёт сохранится в папку LaptopToolkit на рабочем столе.' 'Запустить' -ToLog -Click { Do-Full })
+
+# ================= БАТАРЕЯ =================
+Add-Page 'battery' 'Батарея' 'battery' 'Включите экономию один раз - дальше всё переключается само при отключении и подключении зарядки.'
+
+$script:BatMaster = Add-Row 'Экономия при работе от батареи' 'Отключили зарядку - экран 60 Гц, процессор без турбо, экономичный режим Windows. Подключили - снова полная мощность.' -Switch -Primary -H 92 -Load {
+    param($r)
+    $s = Get-Summary 'battery'
+    $on = ($s.Total -gt 0 -and $s.On -eq $s.Total)
+    $st = if ($on) { 1 } elseif ($s.On) { 2 } else { 3 }
+    Set-Row $r $st $(if ($on) { 'включена' } elseif ($s.On) { "включено $($s.On) из $($s.Total)" } else { 'выключена' }) -On $on
+} -Click {
+    param($r)
+    if ($r.On) {
+        if (-not (Ask-User 'Выключить экономию и вернуть настройки, которые были до программы?' 'Экономия на батарее')) { return }
+        $n = Set-AllItems 'battery' $false
+        $n += Undo-Journal 'battery'   # изменения версии 3.x
+        Set-Status "Экономия выключена, настройки возвращены (изменено: $n)." $cOk
+    } else {
+        $n = Set-AllItems 'battery' $true
+        Set-Status 'Готово! Отключите зарядку - через 2-3 секунды строка «Сейчас» покажет 60 Гц и экономичный режим.' $cOk
+        Show-Info ("Экономия включена.`n`nПроверьте: отключите зарядку и посмотрите на строку «Сейчас» - через 2-3 секунды там будет «От батареи · 60 Гц · Лучшая энергоэффективность».`n`n" +
+                   'Подключите зарядку - всё вернётся на полную мощность.') 'Экономия на батарее'
+    }
+}
+
+$script:NowRow = Add-Row 'Сейчас' 'Отключите зарядку: через 2-3 секунды здесь появится «От батареи · 60 Гц · Лучшая энергоэффективность» - значит, всё работает.' -H 76
+$script:NowRow.State = 0
+
+Add-Section 'Главная причина расхода'
+[void](Add-Row 'Режим графики' '' 'Как переключить' -Load { param($r) Set-GraphicsRow $r } -Click { Show-HybridDialog })
+
+Add-Section 'Что включается на батарее' 'Каждую настройку можно включить или выключить отдельно. Общий переключатель сверху включает все, кроме последней.'
+foreach ($k in 'refresh', 'overlay', 'boost', 'epp', 'saver', 'screen', 'standby', 'devices', 'video', 'gpuprefs', 'edge', 'bgapps') {
+    [void](Add-ItemRow $script:Items["battery:$k"])
+}
+
+Add-Section 'Что ещё садит батарею'
+[void](Add-Row 'Что не даёт видеокарте уснуть' 'Какие программы держат RTX 4070 включённой.' 'Проверить' -ToLog -Click { Do-GpuHolders })
+[void](Add-Row 'Энергоотчёт Windows' '60 секунд наблюдения: что мешает энергосбережению. Лучше запускать на батарее.' 'Запустить' -Click { Do-EnergyReport })
+[void](Add-Row 'Расход во сне' 'Сколько заряда ушло во сне и что не давало спать.' 'Открыть' -Click { Do-SleepStudy })
+[void](Add-Row 'Журнал переключений' 'Когда и что переключалось при подключении и отключении зарядки.' 'Показать' -ToLog -Click { Do-AgentLog })
+[void](Add-Row 'Вручную (программа не может)' 'Подсветка клавиатуры - выключить (Fn + клавиша подсветки). Яркость 40-60%. NVIDIA App -> Battery Boost: вкл. AMD Software -> Vari-Bright: вкл.' -H 80)
+
+# ================= ВИДЕОКАРТА =================
+Add-Page 'gpu' 'Видеокарта' 'gpu' 'RTX 4070 Laptop: 115 Вт база + 25 Вт Dynamic Boost = 140 Вт. Только от сети. Прошивку программа не трогает.'
+
+[void](Add-Row 'Включить всё для 140 Вт' 'Dynamic Boost, служба NVIDIA и режим «Максимальная производительность» от сети - одной кнопкой.' 'Сделать' -Primary -H 88 -Load {
+    param($r)
+    $g = Get-GpuInfo
+    $perf = ((Test-AgentFlag 'AcOverlay') -eq $OV_PERF)
+    if ($g.Db -eq 'ok' -and $perf) { Set-Row $r 1 'всё включено' } else { Set-Row $r 2 'есть что включить' }
+} -Click { Do-Gpu140; Set-Status 'Готово - строки ниже обновлены. Подробности - в «Журнале».' $cOk })
+
+[void](Add-Row 'Мощность видеокарты' '' -Load {
+    param($r)
+    $g = Get-GpuInfo
+    if (-not $g.Smi) { Set-Row $r 3 'драйвер NVIDIA не найден' 'Установите драйвер - раздел «Обслуживание» -> «Драйверы NVIDIA и AMD».'; return }
+    if (-not $g.AC) { Set-Row $r 0 'подключите зарядку' 'На батарее не проверяю: опрос будит видеокарту, а мощность всё равно урезана.'; return }
+    $lim = "лимит $([int]$g.Def) Вт · потолок прошивки $([int]$g.Max) Вт"
+    if ($g.Max -ge 139 -and $g.Db -eq 'ok') { Set-Row $r 1 $lim 'В тяжёлых играх Dynamic Boost добавит +25 Вт, когда процессор не загружен полностью.' }
+    elseif ($g.Max -ge 139) { Set-Row $r 3 $lim 'Прошивка разрешает 140 Вт, но без Dynamic Boost видеокарта упирается в 115 Вт.' }
+    else { Set-Row $r 2 $lim 'Прошивка ограничивает мощность - программно выше не поднять.' }
+})
+
+[void](Add-Row 'Dynamic Boost (+25 Вт)' '' 'Исправить' -Load {
+    param($r)
+    switch -Wildcard ((Get-GpuInfo).Db) {
+        'ok'       { Set-Row $r 1 'работает' 'Компонент NVIDIA Platform Controllers and Framework работает.' -Action '' }
+        'disabled' { Set-Row $r 3 'отключён' 'Отключён в Диспетчере устройств. Кнопка включит его.' -Action 'Включить' }
+        'missing'  { Set-Row $r 3 'не найден' 'Нужен полный драйвер NVIDIA и, возможно, обновление BIOS. Кнопка подскажет, что делать.' -Action 'Исправить' }
+        default    { Set-Row $r 3 'нет драйвера' 'Без него видеокарта ограничена 115 Вт. Кнопка попробует установить драйвер сама.' -Action 'Исправить' }
+    }
+} -Click { Fix-DynamicBoost })
+
+[void](Add-Row 'Максимальная производительность от сети' 'При подключении зарядки Windows сама переходит в режим «Максимальная производительность».' -Switch -Load {
+    param($r)
+    $on = ((Test-AgentFlag 'AcOverlay') -eq $OV_PERF)
+    Set-Row $r $(if ($on) { 1 } else { 2 }) $(if ($on) { 'включается само' } else { 'выключено' }) -On $on
+} -Click {
+    param($r)
+    if ($r.On) {
+        Disable-AgentPart @{ AcOverlay = '' }
+        if ([LTK.Pwr]::OnAC() -eq 1) { [void][LTK.Pwr]::SetOverlay($OV_BAL) }
+    } else {
+        Install-Agent @{ AcOverlay = $OV_PERF }
+        if ([LTK.Pwr]::OnAC() -eq 1) { [void][LTK.Pwr]::SetOverlay($OV_PERF) }
+    }
+})
+
+[void](Add-Row 'Служба NVIDIA' 'NVIDIA Display Container - без неё не работают Панель NVIDIA и управление питанием.' 'Включить' -Load {
+    param($r)
+    $s = Get-Service 'NVDisplay.ContainerLocalSystem' -ErrorAction SilentlyContinue
+    if (-not $s) { Set-Row $r 5 'не установлена' -Action ''; return }
+    if ("$($s.Status)" -eq 'Running' -and "$($s.StartType)" -eq 'Automatic') { Set-Row $r 1 'работает' -Action '' }
+    else { Set-Row $r 3 "$($s.Status) / $($s.StartType)" -Action 'Включить' }
+} -Click {
+    Set-Service 'NVDisplay.ContainerLocalSystem' -StartupType Automatic -ErrorAction SilentlyContinue
+    Start-Service 'NVDisplay.ContainerLocalSystem' -ErrorAction SilentlyContinue
+})
+
+[void](Add-Row 'Режим графики' '' 'Как переключить' -Load { param($r) Set-GraphicsRow $r } -Click { Show-HybridDialog })
+
+$script:PeakRow = Add-Row 'Замер пиковой мощности' 'Нажмите «Начать», запустите тяжёлую игру или FurMark 2 на 3-5 минут. ~140 Вт - всё работает.' 'Начать' -Click {
+    param($r)
+    if ($script:GpuMon) { $script:GpuMon = $false; Set-Row $r 0 -Action 'Начать'; return }
+    if ([LTK.Pwr]::OnAC() -ne 1) { Show-Info 'Подключите зарядку: на батарее 140 Вт недостижимы, а замер будит видеокарту.' 'Замер мощности'; return }
+    $script:GpuPeak = 0.0; $script:GpuMon = $true
+    Set-Row $r 0 'идёт замер...' -Action 'Остановить'
+}
+$script:PeakRow.State = 0
+
+Add-Section 'Разгон'
+[void](Add-Row 'MSI Afterburner' 'Разгон и андервольт RTX 4070. Если не установлен - скачается и запустится сам.' 'Запустить' -Load {
+    param($r)
+    if (Find-Tool $Tools[1]) { Set-Row $r 1 'установлен' -Action 'Запустить' } else { Set-Row $r 0 'не установлен' -Action 'Скачать и запустить' }
+} -Click { Start-Tool $Tools[1] })
+[void](Add-Row 'Гайд по разгону и андервольту' 'Пошагово: частоты ядра и памяти, андервольт, проверка стабильности.' 'Открыть' -ToLog -Click { Do-OcGuide })
+
+# ================= WINDOWS =================
+Add-Page 'windows' 'Оптимизация Windows' 'windows' 'Переключатель включён - улучшение применено. Любой можно выключить обратно в любой момент.'
+
+[void](Add-Row 'Рекомендуемая оптимизация' 'Включает все основные переключатели ниже. Сначала предложит создать точку восстановления.' 'Применить' -Primary -H 88 -Load {
+    param($r)
+    $s = Get-Summary 'windows'
+    if ($s.On -eq $s.Total) { Set-Row $r 1 'всё применено' -Action '' } else { Set-Row $r 2 "применено $($s.On) из $($s.Total)" -Action 'Применить' }
+} -Click {
+    if (Ask-User 'Создать точку восстановления перед изменениями? (рекомендуется, ~30 секунд)' 'Оптимизация Windows') {
+        try { Do-Restore } catch { Out-Box "[!] Точка восстановления: $($_.Exception.Message)" }
+    }
+    $n = Set-AllItems 'windows' $true
+    Set-Status "Применено: $n. Часть изменений - после перезапуска Проводника или перезагрузки." $cOk
+})
+
+Add-Section 'Игры'
+foreach ($k in 'gamemode', 'dvr', 'hags') { [void](Add-ItemRow $script:Items["windows:$k"]) }
+Add-Section 'Реклама и приватность'
+foreach ($k in 'ads', 'telemetry', 'bing', 'widgets', 'copilot', 'delivery') { [void](Add-ItemRow $script:Items["windows:$k"]) }
+Add-Section 'Удобство'
+foreach ($k in 'fileext', 'transp', 'ctxmenu') { [void](Add-ItemRow $script:Items["windows:$k"]) }
+[void](Add-Row 'Перезапустить Проводник' 'Чтобы изменения панели задач и меню применились без перезагрузки. Окна папок закроются.' 'Перезапустить' -Click {
+    Stop-Process -Name explorer -Force -ErrorAction SilentlyContinue
+})
+
+Add-Section 'Лишние приложения'
+[void](Add-Row 'Предустановленный мусор' '' 'Удалить' -Load {
+    param($r)
+    $f = @(Get-BloatFound)
+    if (-not $f.Count) { Set-Row $r 1 'нет' 'Лишних предустановленных приложений не найдено.' -Action ''; return }
+    Set-Row $r 2 "найдено: $($f.Count)" (($f | ForEach-Object { $Bloat[$_] }) -join ', ') -Action 'Удалить'
+} -Click {
+    $f = @(Get-BloatFound)
+    if (-not (Ask-User ("Удалить эти приложения?`n`n" + (($f | ForEach-Object { $Bloat[$_] }) -join ', ') + "`n`nВернуть можно из Microsoft Store.") 'Лишние приложения')) { return }
+    Head 'УДАЛЕНИЕ ПРЕДУСТАНОВЛЕННЫХ ПРИЛОЖЕНИЙ'
+    foreach ($k in $f) {
+        Set-Status "Удаляю: $($Bloat[$k])..." $accent; [Windows.Forms.Application]::DoEvents()
+        Get-AppxPackage -Name $k -ErrorAction SilentlyContinue | Remove-AppxPackage -ErrorAction SilentlyContinue
+        Out-Box "  - $($Bloat[$k])"
+    }
+    Set-Status 'Лишние приложения удалены.' $cOk
+})
+
+Add-Section 'Обслуживание'
+[void](Add-Row 'Точка восстановления' 'Снимок системы. Откат: Win+R -> rstrui.' 'Создать' -Click { Do-Restore; Set-Status 'Точка восстановления создана.' $cOk })
+[void](Add-Row 'Очистка диска' 'Временные файлы, корзина и (по желанию) старые обновления Windows.' 'Очистить' -Load {
+    param($r)
+    $v = Get-Volume -DriveLetter $env:SystemDrive.TrimEnd(':') -ErrorAction SilentlyContinue
+    if ($v) { Set-Row $r 0 "свободно $(GB $v.SizeRemaining) ГБ" }
+} -Click { Do-Cleanup })
+[void](Add-Row 'Автозагрузка программ' 'Отключите то, что не нужно сразу после включения: Steam, Discord, лаунчеры.' 'Открыть' -Click { Do-Startup })
+[void](Add-Row 'Обновить Windows и программы' 'Центр обновления Windows и обновление всех программ через winget.' 'Обновить' -Click { Do-Update })
+[void](Add-Row 'Драйверы NVIDIA и AMD' 'Официальные страницы драйверов видеокарты и чипсета.' 'Открыть' -Click { Do-DriversWeb })
+[void](Add-Row 'Ремонт Windows' 'DISM + SFC: восстановление повреждённых системных файлов (10-30 минут).' 'Запустить' -Click { Do-Repair })
+[void](Add-Row 'Chris Titus WinUtil' 'Сторонняя утилита твиков. Не отключайте в ней службы NVIDIA.' 'Запустить' -Click { Do-WinUtil })
+[void](Add-Row 'Вернуть всё как было' 'Откатывает все изменения Windows, сделанные этой программой (кроме удалённых приложений).' 'Откатить' -Click {
+    if (-not (Ask-User 'Вернуть все настройки Windows, которые меняла программа?' 'Откат')) { return }
+    $n = Undo-Journal 'windows*'
+    Set-Status "Возвращено значений: $n. Перезагрузите ноутбук." $cOk
+})
+
+# ================= ДИАГНОСТИКА =================
+Add-Page 'diag' 'Диагностика' 'diag' 'Сведения о железе и системе - загружаются сами, ничего не меняют.'
+
+[void](Add-Row 'Ноутбук' '' -Load {
+    param($r)
+    $cs = Get-CimInstance Win32_ComputerSystem; $b = Get-CimInstance Win32_BIOS
+    Set-Row $r 0 ("$($cs.Manufacturer) $($cs.Model)".Trim()) "BIOS $($b.SMBIOSBIOSVersion) от $($b.ReleaseDate.ToString('dd.MM.yyyy'))"
+})
+[void](Add-Row 'Windows' '' -Load {
+    param($r)
+    $os = Get-CimInstance Win32_OperatingSystem
+    $up = (Get-Date) - $os.LastBootUpTime
+    Set-Row $r 0 "$($os.Caption -replace 'Microsoft ', ''), сборка $($os.BuildNumber)" "Без перезагрузки: $([int]$up.TotalDays) д $($up.Hours) ч"
+})
+[void](Add-Row 'Процессор' '' -Load {
+    param($r)
+    $c = Get-CimInstance Win32_Processor | Select-Object -First 1
+    Set-Row $r 0 "$($c.Name.Trim())" "$($c.NumberOfCores) ядер / $($c.NumberOfLogicalProcessors) потоков, базовая частота $($c.MaxClockSpeed) МГц"
+})
+[void](Add-Row 'Оперативная память' '' -Load {
+    param($r)
+    $mods = @(Get-CimInstance Win32_PhysicalMemory)
+    $total = ($mods | Measure-Object Capacity -Sum).Sum
+    $d = ($mods | ForEach-Object { "$($_.DeviceLocator): $(GB $_.Capacity) ГБ $($_.ConfiguredClockSpeed) MT/s" }) -join ' · '
+    if ($mods.Count -eq 1) { Set-Row $r 2 "$(GB $total) ГБ, одноканальный режим" "$d. Вторая такая же планка = +10..30% FPS." }
+    else { Set-Row $r 1 "$(GB $total) ГБ, двухканальный" $d }
+})
+[void](Add-Row 'Видеокарты' '' -Load {
+    param($r)
+    $v = @(Get-CimInstance Win32_VideoController)
+    Set-Row $r 0 "$($v.Count) шт." (($v | ForEach-Object { "$($_.Name) (драйвер $($_.DriverVersion))" }) -join ' · ')
+})
+[void](Add-Row 'Диски' '' -Load {
+    param($r)
+    $parts = @(); $worst = 1
+    foreach ($d in @(Get-PhysicalDisk)) {
+        $rc = $d | Get-StorageReliabilityCounter -ErrorAction SilentlyContinue
+        $w = if ($rc -and $null -ne $rc.Wear) { ", износ $($rc.Wear) %" } else { '' }
+        $t = if ($rc -and $rc.Temperature) { ", $($rc.Temperature) °C" } else { '' }
+        $parts += "$($d.FriendlyName) $(GB $d.Size) ГБ: $($d.HealthStatus)$w$t"
+        if ("$($d.HealthStatus)" -ne 'Healthy') { $worst = 3 }
+    }
+    Set-Row $r $worst $(if ($worst -eq 1) { 'исправны' } else { 'есть проблема!' }) ($parts -join ' · ')
+})
+[void](Add-Row 'Батарея' '' 'HTML-отчёт' -Load {
+    param($r)
+    try {
+        $design = (Get-CimInstance -Namespace root\wmi -ClassName BatteryStaticData -ErrorAction Stop | Select-Object -First 1).DesignedCapacity
+        $full = (Get-CimInstance -Namespace root\wmi -ClassName BatteryFullChargedCapacity -ErrorAction Stop | Select-Object -First 1).FullChargedCapacity
+        $cyc = (Get-CimInstance -Namespace root\wmi -ClassName BatteryCycleCount -ErrorAction SilentlyContinue | Select-Object -First 1).CycleCount
+    } catch { $design = 0 }
+    if ($design -gt 0 -and $full -gt 0) {
+        $wear = [math]::Max(0, [math]::Round(100 - $full * 100 / $design, 1))
+        Set-Row $r $(if ($wear -gt 20) { 2 } else { 1 }) "износ $wear %" "Ёмкость $([math]::Round($full / 1000, 1)) из $([math]::Round($design / 1000, 1)) Вт·ч$(if ($cyc) { ", циклов: $cyc" })"
+    } else { Set-Row $r 0 'подробнее в отчёте' }
+} -Click { Do-Battery })
+[void](Add-Row 'Безопасность загрузки' '' -Load {
+    param($r)
+    $sb = $(try { if (Confirm-SecureBootUEFI -ErrorAction Stop) { 'вкл' } else { 'выкл' } } catch { '?' })
+    $tpm = $(try { if ((Get-Tpm -ErrorAction Stop).TpmReady) { 'готов' } else { 'не готов' } } catch { '?' })
+    $vbs = $(try { if ((Get-CimInstance -Namespace root\Microsoft\Windows\DeviceGuard -ClassName Win32_DeviceGuard -ErrorAction Stop).VirtualizationBasedSecurityStatus -eq 2) { 'вкл' } else { 'выкл' } } catch { '?' })
+    Set-Row $r 0 "Secure Boot $sb · TPM $tpm · VBS $vbs" 'VBS (целостность памяти) защищает лучше, но в части игр отнимает 5-10% FPS.'
+})
+
+Add-Section 'Тесты' 'Подключите зарядку. Температуру во время тестов смотрите в HWiNFO64 (страница «Инструменты»).'
+[void](Add-Row 'Стресс-тест процессора, 1 минута' 'Быстрая проверка частот и охлаждения. Итог - в «Журнале».' 'Запустить' -Click { Start-CpuStress 60 })
+[void](Add-Row 'Стресс-тест процессора, 10 минут' 'Долгая нагрузка: видно, сбрасывает ли процессор частоту от перегрева.' 'Запустить' -Click { Start-CpuStress 600 })
+[void](Add-Row 'Остановить стресс-тест' '' 'Остановить' -ToLog -Click { Stop-CpuStress })
+[void](Add-Row 'Тест оперативной памяти' 'Средство проверки памяти Windows. Ноутбук перезагрузится (~20 минут).' 'Запустить' -Click { Do-RamTest })
+[void](Add-Row 'Скорость диска' 'Встроенный тест Windows (winsat).' 'Запустить' -Click { Do-DiskSpeed })
+[void](Add-Row 'Полная проверка и отчёт' 'Все проверки подряд; отчёт сохранится в папку LaptopToolkit на рабочем столе.' 'Запустить' -ToLog -Click { Do-Full })
+
+# ================= БЕЗОПАСНОСТЬ =================
+Add-Page 'security' 'Безопасность' 'security' 'Состояние антивируса проверяется само. Проверки на вирусы - кнопками ниже.'
+
+[void](Add-Row 'Антивирус' '' -Load {
+    param($r)
+    $av = @(try { Get-CimInstance -Namespace root/SecurityCenter2 -ClassName AntiVirusProduct -ErrorAction Stop | ForEach-Object displayName } catch { })
+    Set-Row $r $(if ($av.Count) { 1 } else { 3 }) $(if ($av.Count) { $av -join ', ' } else { 'не найден' })
+})
+[void](Add-Row 'Защита в реальном времени' '' 'Открыть' -Load {
+    param($r)
+    $m = Get-MpInfo
+    if (-not $m) { Set-Row $r 5 'Защитник недоступен'; return }
+    if ($m.RealTimeProtectionEnabled) { Set-Row $r 1 'включена' -Action '' } else { Set-Row $r 3 'ВЫКЛЮЧЕНА' 'Включите в «Безопасность Windows».' -Action 'Открыть' }
+} -Click { Start-Process 'windowsdefender://threat' })
+[void](Add-Row 'Антивирусные базы' '' 'Обновить' -Load {
+    param($r)
+    $m = Get-MpInfo
+    if (-not $m) { Set-Row $r 5 'н/д' -Action ''; return }
+    $age = [int]((Get-Date) - $m.AntivirusSignatureLastUpdated).TotalDays
+    Set-Row $r $(if ($age -gt 7) { 2 } else { 1 }) "от $($m.AntivirusSignatureLastUpdated.ToString('dd.MM.yyyy'))"
+} -Click { Start-Console 'Обновление баз Защитника' 'Update-MpSignature; Write-Host "Базы обновлены."' })
+[void](Add-Row 'Найденные угрозы' '' 'Подробно' -ToLog -Load {
+    param($r)
+    $n = @(Get-MpThreatDetection -ErrorAction SilentlyContinue).Count
+    if ($n) { Set-Row $r 2 "в истории: $n" 'Защитник уже что-то находил - посмотрите подробности.' } else { Set-Row $r 1 'нет' -Action '' }
+} -Click { Do-AvStatus })
+[void](Add-Row 'Исключения Защитника' 'Вирусы часто добавляют себя в исключения, чтобы их не проверяли.' 'Показать' -ToLog -Load {
+    param($r)
+    $p = Get-MpPreference -ErrorAction SilentlyContinue
+    $ex = @(@($p.ExclusionPath) + @($p.ExclusionProcess) + @($p.ExclusionExtension) | Where-Object { $_ })
+    if ($ex.Count) { Set-Row $r 2 "есть: $($ex.Count)" } else { Set-Row $r 1 'нет' -Action '' }
+} -Click { Do-AvStatus })
+[void](Add-Row 'Последняя проверка' '' 'Быстрая проверка' -Load {
+    param($r)
+    $m = Get-MpInfo
+    if (-not $m) { Set-Row $r 5 'н/д' -Action ''; return }
+    $full = if ($m.FullScanAge -gt 10000) { 'полной не было' } else { "полная - $($m.FullScanAge) дн. назад" }
+    Set-Row $r $(if ($m.QuickScanAge -gt 14) { 2 } else { 1 }) "быстрая - $($m.QuickScanAge) дн. назад · $full"
+} -Click { Do-QuickScan })
+
+Add-Section 'Проверки'
+[void](Add-Row 'Полная проверка Защитником' 'Все диски, 1-3 часа. Идёт в отдельном окне.' 'Запустить' -Click { Do-FullScan })
+[void](Add-Row 'Автономная проверка' 'До загрузки Windows, ловит руткиты. Ноутбук перезагрузится (~15 минут).' 'Запустить' -Click { Do-OfflineScan })
+[void](Add-Row 'Поиск подозрительного' 'Автозагрузка, задачи, службы, процессы, файл hosts и прокси.' 'Проверить' -ToLog -Click { Do-Suspicious })
+[void](Add-Row 'Microsoft Safety Scanner' 'Официальный одноразовый сканер Microsoft - скачается и запустится сам (~200 МБ).' 'Запустить' -Click { Do-Msert })
+[void](Add-Row 'Второе мнение (Kaspersky KVRT)' 'Бесплатный сканер без установки - откроется страница загрузки.' 'Открыть' -Click { Do-Kvrt })
+
+# ================= ИНСТРУМЕНТЫ =================
+Add-Page 'tools' 'Инструменты' 'install' 'Программы для проверки и разгона: нажмите - скачается и сразу запустится (официальные пакеты через winget).'
+
+[void](Add-Row 'Скачать основные' 'HWiNFO64, MSI Afterburner, OCCT, FurMark 2 и CrystalDiskInfo - одним окном.' 'Скачать' -Primary -H 84 -Load {
+    param($r)
+    $miss = @($Tools | Where-Object { $_.Rec -and -not (Find-Tool $_) })
+    if ($miss.Count) { Set-Row $r 2 "не хватает: $($miss.Count)" -Action 'Скачать' } else { Set-Row $r 1 'все установлены' -Action '' }
+} -Click {
+    if (-not (Test-Winget)) { return }
+    $miss = @($Tools | Where-Object { $_.Rec -and -not (Find-Tool $_) })
+    Start-Console 'Скачиваю основные программы' (($miss | ForEach-Object { "winget install -e --id $($_.Id) --silent --accept-package-agreements --accept-source-agreements" }) -join '; ')
+})
+Add-Section 'Программы'
+foreach ($t in $Tools) {
+    $r = Add-Row $t.Name $t.Desc 'Запустить' -Load {
+        param($r)
+        if (Find-Tool $r.Tag.Tool) { Set-Row $r 1 'установлена' -Action 'Запустить' } else { Set-Row $r 0 'не установлена' -Action 'Скачать и запустить' }
+    } -Click { param($r) Start-Tool $r.Tag.Tool }
+    $r.Tag.Tool = $t
+}
+
+Add-Section 'Переустановка Windows'
+[void](Add-Row 'Как поставить чистую Windows' 'Пошаговый план и что сохранить заранее.' 'Открыть' -ToLog -Click { Do-WinGuide })
+[void](Add-Row 'Бэкап драйверов' 'Сохранить все драйверы в папку отчётов (особенно важен Wi-Fi).' 'Сохранить' -Click { Do-DriverBackup })
+[void](Add-Row 'Скачать Windows 11' 'Официальная страница Microsoft.' 'Открыть' -Click { Start-Process 'https://www.microsoft.com/software-download/windows11' })
+
+# ================= ЖУРНАЛ =================
+$script:LogNav = Add-Nav 'log' 'Журнал' 'report'
 
 $chipSave.Add_Click({ Invoke-Safe 'Сохранить отчёт' { Do-Save } })
 $chipFolder.Add_Click({ Start-Process explorer.exe $ReportDir })
 $chipClear.Add_Click({ $box.Clear(); [void]$script:Log.Clear() })
 
+function Fix-DynamicBoost {
+    Head 'DYNAMIC BOOST'
+    $st = Get-DbState
+    if ($st -eq 'disabled') {
+        $d = @(Get-Nvpcf)[0]
+        Enable-PnpDevice -InstanceId $d.InstanceId -Confirm:$false -ErrorAction SilentlyContinue
+        Start-Sleep -Seconds 2
+    } elseif ($st -ne 'ok' -and $st -ne 'missing') { [void](Repair-Nvpcf) }
+    $script:Cache.Clear()
+    if ((Get-DbState) -eq 'ok') {
+        Out-Ok '  + Dynamic Boost работает.'
+        Show-Info 'Готово: Dynamic Boost работает. В тяжёлых играх от сети видеокарта сможет брать до 140 Вт.' 'Dynamic Boost'
+        return
+    }
+    Show-DbHelp
+    $msg = "Автоматически починить не получилось: драйвера Dynamic Boost нет на диске.`n`n" +
+           "ЧТО СДЕЛАТЬ:`n1. Параметры -> Центр обновления -> Дополнительные параметры -> Необязательные обновления -> установить всё от NVIDIA.`n" +
+           "2. Не помогло - драйвер с nvidia.com: при установке «Выборочная» -> «Чистая установка».`n" +
+           "3. Перезагрузка -> снова откройте эту страницу.`n`nОткрыть необязательные обновления и сайт NVIDIA?"
+    if (Ask-User $msg 'Dynamic Boost') {
+        Start-Process 'ms-settings:windowsupdate-optionalupdates'
+        Start-Process 'https://www.nvidia.com/drivers/'
+    }
+}
+
 # ---------------- МОНИТОР ----------------
 $script:GpuMon = $false
 $tileGpu.Add_Click({
     if (-not $script:GpuMon -and [LTK.Pwr]::OnAC() -eq 0) {
-        $statusLbl.Text = 'На батарее слежение за GPU не включается: оно будит видеокарту.'
+        Set-Status 'На батарее слежение за видеокартой не включается: оно будит её.' $cWarn
         return
     }
     $script:GpuMon = -not $script:GpuMon
+    Set-Row $script:PeakRow 0 -Action $(if ($script:GpuMon) { 'Остановить' } else { 'Начать' })
     Update-Monitor
 })
 
+$script:LastAC = $null
 function Update-State {
     $ac = [LTK.Pwr]::OnAC()
     $ov = [LTK.Pwr]::GetOverlay()
@@ -2274,8 +2877,17 @@ function Update-State {
     else { $badgePower.Set('Питание: ?', $cDim) }
     $tone = if ($ov -eq $OV_PERF) { $accent } elseif ($ov -eq $OV_EFF) { $cOk } else { $cDim }
     $badgeMode.Set("Режим: $ovName", $tone)
-    $agent = if ($script:AgentOn) { 'вкл' } else { 'выкл' }
-    $stateLbl.Text = "Экран: $([LTK.Disp]::Current()) Гц    ·    Автопереключение: $agent    ·    Отчёты: $ReportDir"
+    $hz = [LTK.Disp]::Current()
+    $stateLbl.Text = "Экран: $hz Гц    ·    Отчёты: $ReportDir"
+    $src = if ($ac -eq 1) { 'От сети' } elseif ($ac -eq 0) { 'От батареи' } else { '?' }
+    $nowSt = if ($ac -eq 0 -and $ov -eq $OV_EFF) { 1 } elseif ($ac -eq 0) { 2 } else { 0 }
+    Set-Row $script:NowRow $nowSt "$src · $hz Гц · $ovName"
+    # источник питания сменился - обновить состояние на открытой странице
+    if ($null -ne $script:LastAC -and $ac -ne $script:LastAC) {
+        $script:Cache.Clear()
+        if ($script:PageKey -and $script:PageKey -ne 'log') { Queue-Page $script:PageKey -Front }
+    }
+    $script:LastAC = $ac
 }
 
 function Update-Monitor {
@@ -2323,7 +2935,8 @@ function Update-Monitor {
 
     if ($ac -eq 0 -and $script:GpuMon) {
         $script:GpuMon = $false
-        Out-Dim 'Слежение за GPU выключено: на батарее оно не даёт видеокарте уснуть.'
+        Set-Row $script:PeakRow 0 -Action 'Начать'
+        Set-Status 'Слежение за видеокартой выключено: на батарее оно не даёт ей уснуть.' $cWarn
     }
     if (-not $Smi) { $tileGpu.Set('н/д', 'драйвер NVIDIA не найден', -1, $cDim) }
     elseif (-not $script:GpuMon) { $tileGpu.Set('не слежу', 'нажмите, чтобы включить (будит GPU)', -1, $cDim) }
@@ -2335,6 +2948,8 @@ function Update-Monitor {
             if ($w -gt $script:GpuPeak) { $script:GpuPeak = $w }
             $val = if ($null -ne $w) { "$([math]::Round($w)) Вт" } else { "$($v[2]) Вт" }
             $tileGpu.Set($val, "$($v[0]) °C  ·  $($v[1]) %  ·  пик $([math]::Round($script:GpuPeak)) Вт", $(if ($w) { $w * 100 / 140 } else { 0 }), $accent)
+            $pk = [math]::Round($script:GpuPeak)
+            Set-Row $script:PeakRow $(if ($pk -ge 135) { 1 } elseif ($pk -ge 100) { 2 } else { 0 }) "пик $pk Вт · сейчас $val"
         } else { $tileGpu.Set('?', 'nvidia-smi не ответил', -1, $cWarn) }
     }
     Update-State
@@ -2348,26 +2963,23 @@ $timer.Add_Tick({
         if ($form.WindowState -eq 'Minimized') { return }   # свёрнуто - не тратим батарею на опрос
         $timer.Interval = if ([LTK.Pwr]::OnAC() -eq 0) { 5000 } else { 2000 }
         Update-Monitor
-    } catch { $statusLbl.Text = "Монитор: $($_.Exception.Message)" }
+    } catch { Set-Status "Монитор: $($_.Exception.Message)" $cWarn }
     finally { $timer.Start() }
 })
 
 $form.Add_Shown({
-    foreach ($c in $box, $navFlow) { [LTK.UI.Theme]::DarkScroll($c) }
+    foreach ($c in @($box, $navFlow) + @($script:Pages.Values | ForEach-Object { $_.Flow })) { [LTK.UI.Theme]::DarkScroll($c) }
     $script:AgentOn = Test-AgentTask
     Show-Page 'home'
     try { Update-Monitor } catch { }
+    # остальные страницы проверяются заранее, в фоне - к моменту перехода всё уже готово
+    foreach ($k in @($script:Pages.Keys)) { if ($k -ne 'home') { Queue-Page $k } }
     $timer.Start()
-    Out-Box "Laptop Toolkit v$Version" $accent
-    Out-Box 'С чего начать - раздел «Главная», карточки сверху вниз:',
-        '  1. «Полная проверка» - отчёт сохранится в папку LaptopToolkit на рабочем столе.',
-        '  2. «140 Вт: разблокировать» - полная мощность RTX 4070 от сети.',
-        '  3. «Оптимизация Windows» и «Максимальная автономность» - быстрее от сети, дольше от батареи.',
-        'Плитка «Видеокарта» сверху включает слежение за GPU.'
-    Invoke-Safe 'Система' { Do-System; Do-Ram }
+    $loader.Start()
+    Out-Box "Laptop Toolkit v$Version - журнал действий. Здесь появляются подробности проверок и изменений." $accent
 })
 $form.Add_FormClosing({
-    $timer.Stop()
+    $timer.Stop(); $loader.Stop()
     Get-Job | Stop-Job -ErrorAction SilentlyContinue
     Get-Job | Remove-Job -Force -ErrorAction SilentlyContinue
 })
