@@ -1,4 +1,4 @@
-﻿# LaptopToolkit v4.0 - Skytech Noir (Ryzen 7 8845HS / DDR5-5600 / RTX 4070 Laptop до 140 Вт)
+﻿# LaptopToolkit v4.1 - Skytech Noir (Ryzen 7 8845HS / DDR5-5600 / RTX 4070 Laptop до 140 Вт)
 # Файл должен быть в UTF-8 с BOM: иначе Windows PowerShell 5.1 ломает кириллицу.
 
 $isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole(
@@ -11,7 +11,7 @@ if (-not $isAdmin) {
 }
 
 $ProgressPreference = 'SilentlyContinue'
-$Version = '4.0'
+$Version = '4.1'
 
 # ---------------- нативные функции ----------------
 # Этот же код сохраняется в ProgramData и используется агентом автопереключения,
@@ -1289,7 +1289,7 @@ function Show-HybridHelp {
     Out-Box '', 'КАК ВКЛЮЧИТЬ ГИБРИДНЫЙ РЕЖИМ (для батареи):',
         '  1. Панель управления NVIDIA -> Дисплей -> «Управление режимом дисплея» (если такой пункт есть)',
         '     -> «Оптимус NVIDIA» / «Автоматический выбор» -> перезагрузка.',
-        '  2. Если пункта нет - переключатель GPU / MUX / Hybrid в фирменной утилите ноутбука (Control Center)',
+        '  2. Если пункта нет - переключатель графики в Control Center (утилита ноутбука, версия 5.x)',
         '     или в BIOS (обычно Advanced -> Display / Graphics Mode -> Hybrid, MSHybrid или Optimus).',
         '  3. Внешний монитор через HDMI обычно подключён прямо к RTX 4070 - на батарее отключайте его.',
         '  Для игр от сети можно снова включить «Только дискретная» - это +5..15% FPS.'
@@ -1423,7 +1423,7 @@ function Show-GpuVerdict {
     } elseif ($max -ge 100) {
         Out-Warn "ИТОГ: драйвер сообщает потолок $max Вт (база). Dynamic Boost добавляет сверху до +25 Вт динамически."
         Out-Box '  Проверьте реальный максимум: кнопка «Замер пиковой мощности GPU» + игра или FurMark 2 на 3-5 минут.',
-                '  Если пик держится около базы - в фирменной утилите / BIOS не включён режим Turbo (Performance).'
+                '  Если пик держится около базы - в Control Center (утилита ноутбука) не включён режим Turbo (Performance).'
     } elseif ($max) {
         Out-Box "!!! ИТОГ: прошивка (vBIOS) этого ноутбука ограничивает видеокарту $max Вт."
         Out-Box '  Программно поднять выше нельзя. Прошивка чужого vBIOS может «окирпичить» видеокарту, перегреть',
@@ -1463,7 +1463,7 @@ function Do-Gpu140 {
     }
     Out-Box '', 'ЧТОБЫ ВИДЕТЬ 140 ВТ В ИГРАХ:',
         '  1. Только от сети, родной блок питания.',
-        '  2. Фирменная утилита ноутбука / BIOS / сочетание клавиш - режим Turbo (Performance). Без него EC держит меньше.',
+        '  2. Control Center (утилита ноутбука) - режим Turbo (Performance). Без него EC держит меньше.',
         '  3. Охлаждение: подставка, чистые решётки. При 87 °C+ видеокарта сама снижает мощность.',
         '  4. Панель NVIDIA -> Управление режимом дисплея -> «Только дискретная графика» даёт ещё +5..15% FPS',
         '     (но на батарее верните «Автоматический выбор» - иначе заряд уходит в разы быстрее).',
@@ -2052,16 +2052,61 @@ function Get-GpuInfo {
 
 function Get-MpInfo { Cached 'mp' 30 { try { Get-MpComputerStatus -ErrorAction Stop } catch { $null } } }
 
+# Control Center (Uniwill/Tongfang, на этой платформе - версия 5.x): в нём переключаются режим графики и Turbo.
+function Find-ControlCenter {
+    Cached 'cc' 30 {
+        $id = $null
+        try {
+            $a = Get-StartApps -ErrorAction Stop | Where-Object { $_.Name -match 'Control\s*Cent' -and $_.Name -notmatch 'NVIDIA|AMD|Radeon' } | Select-Object -First 1
+            if ($a) { $id = "shell:AppsFolder\$($a.AppID)" }
+        } catch { }
+        if (-not $id) {
+            try {
+                $pk = Get-AppxPackage -ErrorAction Stop | Where-Object { $_.Name -match 'ControlCenter' -and $_.Name -notmatch 'NVIDIA' } | Select-Object -First 1
+                if ($pk) { $id = "shell:AppsFolder\$($pk.PackageFamilyName)!App" }
+            } catch { }
+        }
+        if (-not $id) {
+            $app = Get-InstalledApps | Where-Object { $_.DisplayName -match 'Control\s*Cent' -and $_.DisplayName -notmatch 'NVIDIA|AMD' } | Select-Object -First 1
+            if ($app) {
+                $ico = "$($app.DisplayIcon)".Trim('"') -replace ',\s*-?\d+$', ''
+                if ($ico -like '*.exe' -and (Test-Path $ico)) { $id = $ico }
+            }
+        }
+        $id
+    }
+}
+function Open-ControlCenter {
+    $id = Find-ControlCenter
+    if ($id) {
+        try { Start-Process $id -ErrorAction Stop; Set-Status 'Открыт Control Center.' $cOk; return $true } catch { }
+    }
+    Show-Info ("Control Center (утилита ноутбука) не найден.`n`n" +
+        "Установите его из файла ControlCenter_5.1.50.27_STD (с сайта поддержки Skytech): запустите установщик из папки, " +
+        "затем перезагрузите ноутбук.`n`nВ Control Center переключаются режим графики (гибрид / только RTX 4070) и режим Turbo для 140 Вт.") 'Control Center'
+    return $false
+}
+
 function Show-HybridDialog {
     $mode = Get-GraphicsMode
     if ($mode -eq 'hybrid') { Show-Info 'Уже гибридный режим: экран на встроенной Radeon 780M, RTX 4070 спит, пока не запущена игра. Ничего делать не нужно.' 'Режим графики'; return }
+    $cc = [bool](Find-ControlCenter)
     $msg = "Сейчас: $(Get-GraphicsModeText).`n`n" +
            "КАК ВКЛЮЧИТЬ ГИБРИДНЫЙ РЕЖИМ:`n" +
-           "1. Панель управления NVIDIA -> Дисплей -> «Управление режимом дисплея» -> «Оптимус NVIDIA» (или «Автоматический выбор») -> перезагрузка.`n" +
-           "2. Нет такого пункта - переключатель GPU / MUX / Hybrid в фирменной утилите ноутбука или в BIOS (Graphics Mode -> Hybrid / MSHybrid).`n" +
+           "1. Control Center -> переключатель графики (GPU Switch / iGPU-dGPU) -> гибридный режим (Hybrid / MSHybrid / Optimus) -> перезагрузка.`n" +
+           "2. Нет такого переключателя - Панель управления NVIDIA -> «Управление режимом дисплея» -> «Оптимус NVIDIA», или BIOS -> Graphics Mode -> Hybrid.`n" +
            "3. Монитор по HDMI обычно подключён к RTX 4070 - на батарее отключайте его.`n`n" +
-           "Для игр от сети можно вернуть «Только дискретная» (+5..15% FPS).`n`nОткрыть Панель управления NVIDIA?"
-    if (Ask-User $msg 'Режим графики') { Open-NvidiaPanel }
+           "Для игр от сети можно вернуть «только dGPU» (+5..15% FPS).`n`n" +
+           $(if ($cc) { 'Открыть Control Center?' } else { 'Control Center не найден. Открыть Панель управления NVIDIA?' })
+    if (Ask-User $msg 'Режим графики') { if ($cc) { [void](Open-ControlCenter) } else { Open-NvidiaPanel } }
+}
+
+function Add-ControlCenterRow([string]$desc) {
+    [void](Add-Row 'Control Center (утилита ноутбука)' $desc 'Открыть' -Load {
+        param($r)
+        if (Find-ControlCenter) { Set-Row $r 1 'установлен' -Action 'Открыть' }
+        else { Set-Row $r 2 'не установлен' -Action 'Как установить' }
+    } -Click { [void](Open-ControlCenter) })
 }
 
 function Set-GraphicsRow($r) {
@@ -2529,6 +2574,7 @@ $script:NowRow.State = 0
 
 Add-Section 'Главная причина расхода'
 [void](Add-Row 'Режим графики' '' 'Как переключить' -Load { param($r) Set-GraphicsRow $r } -Click { Show-HybridDialog })
+Add-ControlCenterRow 'В нём переключается режим графики: для батареи выберите гибридный (Hybrid / MSHybrid).'
 
 Add-Section 'Что включается на батарее' 'Каждую настройку можно включить или выключить отдельно. Общий переключатель сверху включает все, кроме последней.'
 foreach ($k in 'refresh', 'overlay', 'boost', 'epp', 'saver', 'screen', 'standby', 'devices', 'video', 'gpuprefs', 'edge', 'bgapps') {
@@ -2600,6 +2646,7 @@ Add-Page 'gpu' 'Видеокарта' 'gpu' 'RTX 4070 Laptop: 115 Вт база 
 })
 
 [void](Add-Row 'Режим графики' '' 'Как переключить' -Load { param($r) Set-GraphicsRow $r } -Click { Show-HybridDialog })
+Add-ControlCenterRow 'Режим Turbo / Performance - без него ноутбук не даёт видеокарте 140 Вт. И переключатель графики.'
 
 $script:PeakRow = Add-Row 'Замер пиковой мощности' 'Нажмите «Начать», запустите тяжёлую игру или FurMark 2 на 3-5 минут. ~140 Вт - всё работает.' 'Начать' -Click {
     param($r)
