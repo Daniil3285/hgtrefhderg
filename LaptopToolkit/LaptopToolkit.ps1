@@ -1,4 +1,4 @@
-﻿# LaptopToolkit v4.2 - Skytech Noir (Ryzen 7 8845HS / DDR5-5600 / RTX 4070 Laptop до 140 Вт)
+﻿# LaptopToolkit v5.0 - Skytech Noir (Ryzen 7 8845HS / DDR5-5600 / RTX 4070 Laptop до 140 Вт)
 # Файл должен быть в UTF-8 с BOM: иначе Windows PowerShell 5.1 ломает кириллицу.
 
 $isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole(
@@ -11,7 +11,7 @@ if (-not $isAdmin) {
 }
 
 $ProgressPreference = 'SilentlyContinue'
-$Version = '4.2'
+$Version = '5.0'
 
 # ---------------- нативные функции ----------------
 # Этот же код сохраняется в ProgramData и используется агентом автопереключения,
@@ -651,7 +651,7 @@ $fIconNav = if ($HasIcons) { New-Font 'Segoe MDL2 Assets' 12 } else { New-Font '
 # Значки разделов: Segoe MDL2 Assets (есть в Windows 10/11), запасной вариант - обычные символы.
 $Icons = @{
     home = 0xE80F, '⌂'; diag = 0xE9D9, '✚'; gpu = 0xE7FC, '▣'; battery = 0xE83F, '▮'; windows = 0xE713, '⚙'
-    security = 0xEA18, '◈'; tests = 0xEC4A, '◷'; oc = 0xE945, '⚡'; install = 0xE7F8, '▭'; report = 0xE8A5, '☰'
+    security = 0xEA18, '◈'; tests = 0xEC4A, '◷'; oc = 0xE945, '⚡'; install = 0xE7F8, '▭'; report = 0xE8A5, '☰'; ai = 0xE8BD, '✦'; image = 0xE74E, '⊞'
 }
 function Ico([string]$key) {
     $i = $Icons[$key]
@@ -1842,19 +1842,19 @@ function Do-DriverBackup {
 }
 
 function Do-WinGuide {
-    Head 'ЧИСТАЯ WINDOWS ВМЕСТО «КАСТОМНОЙ СБОРКИ»'
+    Head 'КАК ПОСТАВИТЬ СВОЮ WINDOWS'
     Out-Box @(
-        'Почему не сборки (Ghost Spectre, Tiny11, «Windows by ...»): неизвестный код, вырезаны защита и обновления,',
-        'бывают майнеры и бэкдоры, ломаются драйверы и игровые античиты.',
-        'Оригинальный образ + оптимизация этой программой = та же скорость без риска.',
+        'Своя сборка из официального образа (страница «Своя Windows») - не то же самое, что чужие «сборки»',
+        '(Ghost Spectre, «Windows by ...»): там неизвестный код, вырезаны защита и обновления, бывают майнеры и бэкдоры.',
+        'Здесь всё собирается на вашем ноутбуке из ISO Microsoft, убирается только реклама и мусор.',
         '',
         'ПЛАН',
-        '  1. «Бэкап драйверов» -> скопируйте папку DriversBackup на флешку (особенно важен Wi-Fi!).',
-        '  2. Сохраните личные файлы и пароли.',
-        '  3. «Скачать Windows 11» -> Media Creation Tool -> флешка 8+ ГБ.',
+        '  1. Сохраните личные файлы и пароли (браузер, игры в облаке Steam - не нужно).',
+        '  2. Страница «Своя Windows»: копия драйверов -> ISO -> флешка -> «Собрать».',
+        '  3. Ключ BitLocker - если диск зашифрован (строка на той же странице).',
         '  4. Загрузка с флешки (Boot Menu: F7/F11/F12/Esc при включении - зависит от модели),',
         '     удалить все разделы системного диска -> установка в незанятое место.',
-        '  5. Драйверы: Диспетчер устройств -> Обновить драйвер -> папка с флешки; затем NVIDIA App и AMD.',
+        '  5. Драйверы уже в образе. Потом обновите NVIDIA (NVIDIA App) и AMD Chipset.',
         '  6. Запустите этот Toolkit: Главная -> всё жёлтое и красное по кнопкам справа.'
     )
     try {
@@ -1914,7 +1914,7 @@ function Add-Page([string]$key, [string]$title, [string]$icon, [string]$desc) {
     $flow.Controls.AddRange(@($t, $d))
     $flow.Add_Resize({ param($s, $e) Update-PageWidth $s })
     $pageHost.Controls.Add($flow)
-    $script:Pages[$key] = @{ Flow = $flow; Rows = (New-Object Collections.ArrayList) }
+    $script:Pages[$key] = @{ Flow = $flow; Rows = (New-Object Collections.ArrayList); Title = $title }
     $script:CurPage = $key
 }
 
@@ -1925,6 +1925,13 @@ function Update-PageWidth($flow) {
     foreach ($c in $flow.Controls) {
         if ($c -is [LTK.UI.Row]) { if ($c.Width -ne $w) { $c.Width = $w } }
         elseif ($c.Tag -eq 'wrap') { $c.MaximumSize = New-Object Drawing.Size($w, 0) }
+        elseif ($c.Tag -eq 'full') {
+            # чат занимает остаток видимой области, но не меньше 340 px
+            $h = $flow.ClientSize.Height - ($c.Top - $flow.AutoScrollPosition.Y) - $flow.Padding.Bottom - (Px 4)
+            $h = [math]::Max((Px 340), $h)
+            if ($c.Width -ne $w) { $c.Width = $w }
+            if ($c.Height -ne $h) { $c.Height = $h }
+        }
     }
     $flow.ResumeLayout()
 }
@@ -2545,6 +2552,322 @@ $script:HomeBat = Add-Row 'Экономия на батарее' '' 'Откры�
 
 [void](Add-Row 'Полная проверка и отчёт' 'Все проверки подряд с подробностями; отчёт сохранится в папку LaptopToolkit на рабочем столе.' 'Запустить' -ToLog -Click { Do-Full })
 
+# ================= AI-ПОМОЩНИК =================
+# Чат через OpenAI-совместимый API: локальная Ollama (по умолчанию, бесплатно и без интернета) или облако с ключом.
+# ИИ получает сводку всех проверок программы и только советует - сам ничего не меняет.
+
+Add-Type -AssemblyName System.Net.Http
+[Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
+$script:Http = New-Object System.Net.Http.HttpClient
+$script:Http.Timeout = [TimeSpan]::FromMinutes(5)
+$AiDir = Join-Path $env:APPDATA 'LaptopToolkit'
+$AiCfgPath = Join-Path $AiDir 'ai.json'
+$AiPresets = [ordered]@{
+    'ollama'     = @{ Name = 'Ollama - на этом ноутбуке (бесплатно, без интернета)'; Url = 'http://localhost:11434/v1'; Model = 'qwen2.5:7b'; Key = $false }
+    'openrouter' = @{ Name = 'OpenRouter - облако, нужен ключ'; Url = 'https://openrouter.ai/api/v1'; Model = 'openrouter/auto'; Key = $true }
+    'openai'     = @{ Name = 'OpenAI - облако, нужен ключ'; Url = 'https://api.openai.com/v1'; Model = 'gpt-4o-mini'; Key = $true }
+    'custom'     = @{ Name = 'Другой OpenAI-совместимый сервис'; Url = ''; Model = ''; Key = $true }
+}
+$script:AiHistory = New-Object Collections.ArrayList
+$script:AiTask = $null
+
+function Get-AiConfig {
+    $c = @{ Provider = 'ollama'; Url = $AiPresets.ollama.Url; Model = $AiPresets.ollama.Model; Key = '' }
+    if (Test-Path $AiCfgPath) {
+        try {
+            $j = Get-Content $AiCfgPath -Raw -Encoding UTF8 | ConvertFrom-Json
+            foreach ($k in 'Provider', 'Url', 'Model') { if ($j.$k) { $c[$k] = "$($j.$k)" } }
+            if ($j.KeyProtected) {
+                # ключ зашифрован DPAPI - расшифровать может только этот пользователь на этом ноутбуке
+                $ss = ConvertTo-SecureString $j.KeyProtected
+                $c.Key = [Runtime.InteropServices.Marshal]::PtrToStringBSTR([Runtime.InteropServices.Marshal]::SecureStringToBSTR($ss))
+            }
+        } catch { }
+    }
+    $c
+}
+function Save-AiConfig($c) {
+    New-Item -ItemType Directory -Force -Path $AiDir | Out-Null
+    $prot = ''
+    if ($c.Key) { $prot = ConvertTo-SecureString $c.Key -AsPlainText -Force | ConvertFrom-SecureString }
+    Write-Utf8 $AiCfgPath (ConvertTo-Json -InputObject @{ Provider = $c.Provider; Url = $c.Url; Model = $c.Model; KeyProtected = $prot })
+}
+
+function Find-Ollama {
+    $c = @("$env:LOCALAPPDATA\Programs\Ollama\ollama.exe", "$env:ProgramFiles\Ollama\ollama.exe")
+    $cmd = Get-Command ollama -ErrorAction SilentlyContinue
+    if ($cmd) { $c = @($cmd.Source) + $c }
+    $c | Where-Object { Test-Path $_ } | Select-Object -First 1
+}
+# Список моделей запущенной Ollama; $null - не отвечает.
+function Get-OllamaModels {
+    try {
+        $t = $script:Http.GetStringAsync('http://localhost:11434/api/tags')
+        if (-not $t.Wait(1500)) { return $null }
+        , @(($t.Result | ConvertFrom-Json).models | ForEach-Object { "$($_.name)" })
+    } catch { $null }
+}
+
+function Show-AiSettings {
+    $c = Get-AiConfig
+    $dlg = New-Object Windows.Forms.Form
+    $dlg.Text = 'Подключение ИИ'; $dlg.StartPosition = 'CenterParent'; $dlg.AutoScaleMode = 'None'
+    $dlg.Size = Sz 620 430; $dlg.FormBorderStyle = 'FixedDialog'; $dlg.MaximizeBox = $false; $dlg.MinimizeBox = $false
+    $dlg.BackColor = $bg; $dlg.ForeColor = $fg; $dlg.Font = $fUi; $dlg.ShowInTaskbar = $false
+    $dlg.Add_HandleCreated({ param($s, $e) [LTK.UI.Theme]::DarkTitle($s.Handle, $panel) })
+    $y = 18
+    $mkLabel = { param($t) $l = New-Object Windows.Forms.Label; $l.Text = $t; $l.ForeColor = $cDim; $l.AutoSize = $true; $l.Location = New-Object Drawing.Point((Px 20), (Px $script:dy)); $dlg.Controls.Add($l) }
+    $mkBox = {
+        $b = New-Object Windows.Forms.TextBox
+        $b.Location = New-Object Drawing.Point((Px 20), (Px ($script:dy + 22))); $b.Width = Px 560
+        $b.BackColor = $panel2; $b.ForeColor = $fg; $b.BorderStyle = 'FixedSingle'; $dlg.Controls.Add($b); $b
+    }
+    $script:dy = $y; & $mkLabel 'Где работает ИИ'
+    $cb = New-Object Windows.Forms.ComboBox
+    $cb.DropDownStyle = 'DropDownList'; $cb.Location = New-Object Drawing.Point((Px 20), (Px ($y + 22))); $cb.Width = Px 560
+    $cb.BackColor = $panel2; $cb.ForeColor = $fg; $cb.FlatStyle = 'Flat'
+    $keys = @($AiPresets.Keys)
+    foreach ($k in $keys) { [void]$cb.Items.Add($AiPresets[$k].Name) }
+    $dlg.Controls.Add($cb)
+    $script:dy = $y + 70; & $mkLabel 'Адрес (URL)'; $tbUrl = & $mkBox
+    $script:dy = $y + 130; & $mkLabel 'Модель'; $tbModel = & $mkBox
+    $script:dy = $y + 190; & $mkLabel 'Ключ API (хранится зашифрованным, только на этом ноутбуке)'; $tbKey = & $mkBox
+    $tbKey.UseSystemPasswordChar = $true
+    $tbUrl.Text = $c.Url; $tbModel.Text = $c.Model; $tbKey.Text = $c.Key
+    $cb.SelectedIndex = [math]::Max(0, [array]::IndexOf($keys, $c.Provider))
+    $cb.Tag = @{ Keys = $keys; Url = $tbUrl; Model = $tbModel; Key = $tbKey; Init = $true }
+    $cb.Add_SelectedIndexChanged({
+        param($s, $e)
+        $t = $s.Tag
+        if ($t.Init) { $t.Init = $false } else {
+            $p = $AiPresets[$t.Keys[$s.SelectedIndex]]
+            if ($p.Url) { $t.Url.Text = $p.Url; $t.Model.Text = $p.Model }
+        }
+        $t.Key.Enabled = $AiPresets[$t.Keys[$s.SelectedIndex]].Key
+    })
+    $tbKey.Enabled = $AiPresets[$keys[$cb.SelectedIndex]].Key
+    $hint = New-Object Windows.Forms.Label
+    $hint.Text = 'Ollama работает прямо на ноутбуке на RTX 4070: бесплатно, без интернета, данные никуда не уходят. Облачные сервисы отвечают умнее, но нужен ключ и интернет.'
+    $hint.ForeColor = $cDim; $hint.Font = $fSmall; $hint.Location = New-Object Drawing.Point((Px 20), (Px ($y + 258))); $hint.Size = Sz 560 40
+    $dlg.Controls.Add($hint)
+    $ok = New-Chip 'Сохранить' 130 -Primary; $ok.Height = Px 34; $ok.Location = New-Object Drawing.Point((Px 450), (Px ($y + 310))); $ok.DialogResult = 'OK'
+    $cn = New-Chip 'Отмена' 110; $cn.Height = Px 34; $cn.Location = New-Object Drawing.Point((Px 330), (Px ($y + 310))); $cn.DialogResult = 'Cancel'
+    $dlg.Controls.AddRange(@($ok, $cn)); $dlg.AcceptButton = $ok; $dlg.CancelButton = $cn
+    if ($dlg.ShowDialog($form) -eq 'OK') {
+        $n = @{ Provider = $keys[$cb.SelectedIndex]; Url = $tbUrl.Text.Trim(); Model = $tbModel.Text.Trim(); Key = $(if ($tbKey.Enabled) { $tbKey.Text.Trim() } else { '' }) }
+        if (-not $n.Url -or -not $n.Model) { Show-Info 'Укажите адрес и модель.' 'Подключение ИИ' }
+        else { Save-AiConfig $n; Set-Status 'Настройки ИИ сохранены.' $cOk }
+    }
+    $dlg.Dispose()
+}
+
+# Сводка состояния ноутбука для ИИ - то же, что видно на страницах программы.
+function Get-AiContext {
+    $sb = New-Object Text.StringBuilder
+    [void]$sb.AppendLine('Ноутбук: Skytech Noir (платформа Uniwill/Tongfang, утилита Control Center 5.x), AMD Ryzen 7 8845HS, NVIDIA RTX 4070 Laptop (115 Вт + 25 Вт Dynamic Boost = 140 Вт), встроенная Radeon 780M, экран 15.3" 2560x1440 240 Гц, DDR5-5600, USB-C PD до 100 Вт.')
+    [void]$sb.AppendLine("Сейчас: процессор $($tileCpu.Value) ($($tileCpu.Sub)); память $($tileRam.Value) ($($tileRam.Sub)); батарея $($tileBat.Value) ($($tileBat.Sub)); видеокарта $($tileGpu.Value) ($($tileGpu.Sub)).")
+    $mark = @{ 0 = 'инфо'; 1 = 'OK'; 2 = 'ВНИМАНИЕ'; 3 = 'ПРОБЛЕМА'; 5 = 'н/д' }
+    foreach ($k in $script:Pages.Keys) {
+        if ($k -eq 'ai') { continue }
+        $p = $script:Pages[$k]
+        foreach ($r in $p.Rows) {
+            if ($r.State -eq 4) { continue }
+            $v = if ($r.Switch) { "$(if ($r.On) { 'ВКЛ' } else { 'выкл' }) $($r.Value)" } else { $r.Value }
+            if (-not $v -and -not $r.Tag.Load) { continue }   # просто кнопки без состояния
+            [void]$sb.AppendLine("[$($mark[$r.State])] $($p.Title) / $($r.Title): $v. $($r.Desc)")
+        }
+    }
+    $s = $sb.ToString()
+    if ($s.Length -gt 12000) { $s = $s.Substring(0, 12000) }
+    $s
+}
+
+$AiSystem = 'Ты - встроенный помощник программы Laptop Toolkit. Отвечай по-русски, коротко, по шагам, простыми словами. ' +
+    'Ниже - текущее состояние ноутбука из проверок программы (OK / ВНИМАНИЕ / ПРОБЛЕМА). Опирайся на него. ' +
+    'Если что-то исправляется в программе - назови страницу и строку (например: «Батарея -> Экономия при работе от батареи»). ' +
+    'Режим графики и Turbo переключаются в Control Center ноутбука. ' +
+    'Не советуй прошивать чужой vBIOS, отключать антивирус и защиту Windows, ставить чужие «сборки» Windows и программы из сомнительных источников. ' +
+    'Если не уверен - так и скажи.'
+
+$aiLogBox = $null; $aiInput = $null; $aiSend = $null
+function Add-AiText([string]$who, [string]$text, $color) {
+    $aiLogBox.SelectionStart = $aiLogBox.TextLength
+    $aiLogBox.SelectionColor = $color
+    $aiLogBox.SelectionFont = $fSemi
+    $aiLogBox.AppendText("$who`n")
+    $aiLogBox.SelectionColor = $fg
+    $aiLogBox.SelectionFont = $fUi
+    $aiLogBox.AppendText("$($text.Trim())`n`n")
+    $aiLogBox.SelectionStart = $aiLogBox.TextLength
+    $aiLogBox.ScrollToCaret()
+}
+
+function Send-AiMessage([string]$text, [switch]$WithLog) {
+    $text = $text.Trim()
+    if (-not $text -or $script:AiTask) { return }
+    $c = Get-AiConfig
+    if ($AiPresets[$c.Provider].Key -and -not $c.Key) { Show-Info 'Для облачного ИИ нужен ключ API: «Подключение ИИ» -> «Настроить».' 'AI-помощник'; return }
+    Add-AiText 'Вы' $text $accent
+    $user = $text
+    if ($WithLog) {
+        $lines = @($script:Log.ToString() -split "`r?`n" | Where-Object { $_ } | Select-Object -Last 80)
+        $user += "`n`nЖурнал программы (последние строки):`n" + ($lines -join "`n")
+    }
+    $pending = $(if ($script:Queue.Count) { "`n(Часть проверок ещё выполняется.)" } else { '' })
+    $msgs = New-Object Collections.ArrayList
+    [void]$msgs.Add(@{ role = 'system'; content = "$AiSystem`n`nСОСТОЯНИЕ НОУТБУКА:`n$(Get-AiContext)$pending" })
+    foreach ($m in @($script:AiHistory | Select-Object -Last 12)) { [void]$msgs.Add($m) }
+    [void]$msgs.Add(@{ role = 'user'; content = $user })
+    [void]$script:AiHistory.Add(@{ role = 'user'; content = $text })
+
+    $body = ConvertTo-Json -InputObject @{ model = $c.Model; messages = @($msgs); temperature = 0.3; stream = $false } -Depth 6
+    $req = New-Object System.Net.Http.HttpRequestMessage([System.Net.Http.HttpMethod]::Post, ($c.Url.TrimEnd('/') + '/chat/completions'))
+    $req.Content = New-Object System.Net.Http.StringContent($body, [Text.Encoding]::UTF8, 'application/json')
+    if ($c.Key) { $req.Headers.Authorization = New-Object System.Net.Http.Headers.AuthenticationHeaderValue('Bearer', $c.Key) }
+    if ($c.Provider -eq 'openrouter') { [void]$req.Headers.TryAddWithoutValidation('X-Title', 'Laptop Toolkit') }
+    $script:AiTask = $script:Http.SendAsync($req)
+    $script:AiStarted = Get-Date
+    $aiSend.Text = 'Думаю...'; $aiSend.Invalidate()
+    $aiInput.Text = ''
+    $aiTimer.Start()
+}
+
+function Complete-AiRequest {
+    $t = $script:AiTask
+    $script:AiTask = $null
+    $aiSend.Text = 'Отправить'; $aiSend.Invalidate()
+    $c = Get-AiConfig
+    $answer = $null; $err = $null
+    if ($t.IsFaulted -or $t.IsCanceled) {
+        $ex = if ($t.Exception) { $t.Exception.GetBaseException() } else { $null }
+        if ($c.Provider -eq 'ollama') { $err = 'Ollama не отвечает. Строка «Ollama» выше подскажет, что сделать (установить, запустить или скачать модель).' }
+        elseif ($t.IsCanceled) { $err = 'Слишком долго нет ответа - попробуйте ещё раз.' }
+        else { $err = "Нет связи с сервисом ИИ: $(if ($ex) { $ex.Message } else { 'ошибка соединения' })" }
+    } else {
+        $resp = $t.Result
+        $raw = $resp.Content.ReadAsStringAsync().Result
+        $j = $null
+        try { $j = $raw | ConvertFrom-Json } catch { }
+        if (-not $resp.IsSuccessStatusCode) {
+            $m = if ($j -and $j.error) { if ($j.error.message) { $j.error.message } else { "$($j.error)" } } else { $raw }
+            if ("$m".Length -gt 300) { $m = "$m".Substring(0, 300) }
+            $code = [int]$resp.StatusCode
+            $err = switch ($code) {
+                401 { 'Ключ API не подошёл - проверьте его в «Настроить».' }
+                404 { "Модель «$($c.Model)» не найдена. $(if ($c.Provider -eq 'ollama') { 'Скачайте её в строке «Ollama».' } else { 'Проверьте название модели.' })" }
+                429 { 'Сервис ИИ просит подождать (лимит запросов). Попробуйте через минуту.' }
+                default { "Ошибка сервиса ИИ ($code): $m" }
+            }
+        } elseif ($j -and $j.choices) {
+            $answer = "$($j.choices[0].message.content)" -replace '(?s)<think>.*?</think>\s*', ''
+        } else { $err = 'Сервис ИИ вернул непонятный ответ.' }
+    }
+    if ($answer) {
+        [void]$script:AiHistory.Add(@{ role = 'assistant'; content = $answer })
+        Add-AiText 'ИИ' $answer $cOk
+    } else {
+        if ($script:AiHistory.Count) { $script:AiHistory.RemoveAt($script:AiHistory.Count - 1) }
+        Add-AiText 'ИИ' $err $cWarn
+    }
+}
+
+$aiTimer = New-Object Windows.Forms.Timer
+$aiTimer.Interval = 250
+$aiTimer.Add_Tick({
+    if (-not $script:AiTask) { $aiTimer.Stop(); return }
+    if ($script:AiTask.IsCompleted) { $aiTimer.Stop(); Complete-AiRequest; return }
+    $sec = [int]((Get-Date) - $script:AiStarted).TotalSeconds
+    $aiSend.Text = "Думаю... $sec с"; $aiSend.Invalidate()
+})
+
+Add-Page 'ai' 'AI-помощник' 'ai' 'Спросите что угодно про ноутбук. ИИ видит результаты всех проверок программы и подсказывает по шагам. Сам ничего не меняет.'
+
+[void](Add-Row 'Подключение ИИ' '' 'Настроить' -Load {
+    param($r)
+    $c = Get-AiConfig
+    $where = if ($c.Provider -eq 'ollama') { 'на этом ноутбуке' } else { ([Uri]$c.Url).Host }
+    if ($AiPresets[$c.Provider].Key -and -not $c.Key) { Set-Row $r 2 "$where · $($c.Model)" 'Нужен ключ API - нажмите «Настроить».'; return }
+    Set-Row $r 0 "$where · $($c.Model)" 'Можно выбрать локальную Ollama или облачный сервис.'
+} -Click { Show-AiSettings })
+
+[void](Add-Row 'Ollama' 'Бесплатный ИИ прямо на ноутбуке. Модель ~5 ГБ скачивается один раз.' '' -Load {
+    param($r)
+    $c = Get-AiConfig
+    if ($c.Provider -ne 'ollama') { Set-Row $r 5 'не используется' 'Выбран облачный сервис.' -Action ''; return }
+    $models = Get-OllamaModels
+    if ($null -eq $models) {
+        if (-not (Find-Ollama)) { Set-Row $r 2 'не установлена' 'Нажмите - скачается, установится и сразу скачает модель для русского языка.' -Action 'Установить'; return }
+        Set-Row $r 2 'не запущена' 'Нажмите, чтобы запустить.' -Action 'Запустить'; return
+    }
+    $have = @($models | Where-Object { $_ -eq $c.Model -or $_ -eq "$($c.Model):latest" -or $_ -like "$($c.Model)*" })
+    if (-not $have.Count) { Set-Row $r 2 "модель $($c.Model) не скачана" 'Нажмите - скачается ~5 ГБ, один раз.' -Action 'Скачать модель'; return }
+    Set-Row $r 1 "готова · $($c.Model)" 'Работает на этом ноутбуке. Первый ответ после запуска - до минуты.' -Action ''
+} -Click {
+    param($r)
+    $c = Get-AiConfig
+    $exe = Find-Ollama
+    if (-not $exe) {
+        if (-not (Test-Winget)) { return }
+        Start-Console 'Установка Ollama' ("winget install -e --id Ollama.Ollama --accept-package-agreements --accept-source-agreements; " +
+            "`$o = @('$env:LOCALAPPDATA\Programs\Ollama\ollama.exe', '$env:ProgramFiles\Ollama\ollama.exe') | Where-Object { Test-Path `$_ } | Select-Object -First 1; " +
+            "if (`$o) { Start-Sleep 5; Write-Host 'Скачиваю модель $($c.Model)...'; & `$o pull $($c.Model) } else { Write-Host 'Ollama не установилась.' -ForegroundColor Red }")
+    } elseif ($r.Action -eq 'Запустить') {
+        $app = Join-Path (Split-Path $exe) 'ollama app.exe'
+        if (Test-Path $app) { Start-Process $app } else { Start-Process $exe -ArgumentList 'serve' -WindowStyle Hidden }
+        Start-Sleep -Seconds 3
+    } else {
+        Start-Console "Скачиваю модель $($c.Model)" "& '$exe' pull $($c.Model)"
+    }
+})
+
+$aiPanel = New-Object LTK.UI.RoundPanel
+$aiPanel.Tag = 'full'; $aiPanel.Height = Px 480; $aiPanel.Margin = Pad 0 4 0 8; $aiPanel.Padding = Pad 16 12 12 12
+$aiLogBox = New-Object Windows.Forms.RichTextBox
+$aiLogBox.Dock = 'Fill'; $aiLogBox.ReadOnly = $true; $aiLogBox.BorderStyle = 'None'; $aiLogBox.DetectUrls = $true
+$aiLogBox.BackColor = $panel; $aiLogBox.ForeColor = $fg; $aiLogBox.Font = $fUi; $aiLogBox.ScrollBars = 'Vertical'
+$aiBottom = New-Object Windows.Forms.Panel
+$aiBottom.Dock = 'Bottom'; $aiBottom.Height = Px 92; $aiBottom.BackColor = $panel
+$aiQuick = New-Object Windows.Forms.FlowLayoutPanel
+$aiQuick.Dock = 'Top'; $aiQuick.Height = Px 42; $aiQuick.BackColor = $panel; $aiQuick.WrapContents = $false; $aiQuick.Padding = Pad 0 4 0 0
+$aiInRow = New-Object Windows.Forms.Panel
+$aiInRow.Dock = 'Fill'; $aiInRow.BackColor = $panel; $aiInRow.Padding = Pad 0 8 0 6
+$aiInput = New-Object Windows.Forms.TextBox
+$aiInput.Dock = 'Fill'; $aiInput.BackColor = $panel2; $aiInput.ForeColor = $fg; $aiInput.BorderStyle = 'FixedSingle'
+$aiInput.Font = New-Font 'Segoe UI' 11
+$aiSend = New-Chip 'Отправить' 130 -Primary
+$aiSend.Dock = 'Right'; $aiSend.Font = $fSemi
+$aiGap = New-Object Windows.Forms.Panel; $aiGap.Dock = 'Right'; $aiGap.Width = Px 8; $aiGap.BackColor = $panel
+$aiInRow.Controls.AddRange(@($aiInput, $aiGap, $aiSend))
+$aiBottom.Controls.AddRange(@($aiInRow, $aiQuick))
+$aiPanel.Controls.Add($aiLogBox)
+$aiPanel.Controls.Add($aiBottom)
+$script:Pages['ai'].Flow.Controls.Add($aiPanel)
+
+function Invoke-AiSafe([scriptblock]$a) {
+    try { & $a }
+    catch {
+        $script:AiTask = $null; $aiSend.Text = 'Отправить'; $aiSend.Invalidate()
+        Add-AiText 'ИИ' "Ошибка: $($_.Exception.Message)" $cWarn
+        Out-Box "ОШИБКА [AI]: $($_.Exception.Message) $($_.InvocationInfo.PositionMessage)"
+    }
+}
+$aiSend.Add_Click({ Invoke-AiSafe { Send-AiMessage $aiInput.Text } })
+$aiInput.Add_KeyDown({ param($s, $e) if ($e.KeyCode -eq 'Enter') { $e.SuppressKeyPress = $true; Invoke-AiSafe { Send-AiMessage $aiInput.Text } } })
+foreach ($q in @(
+    @{ T = 'Что исправить первым?'; Q = 'Посмотри на состояние ноутбука и скажи, что исправить в первую очередь, по порядку.' }
+    @{ T = 'Почему садится батарея?'; Q = 'Почему ноутбук быстро разряжается и как получить максимальное время работы от батареи?' }
+    @{ T = 'Как получить 140 Вт?'; Q = 'Как получить полные 140 Вт на видеокарте? Что мне сейчас мешает?' }
+    @{ T = 'Не заряжается от Type-C'; Q = 'Ноутбук не заряжается через Type-C. В чём может быть дело и что проверить?' }
+    @{ T = 'Объясни журнал'; Q = 'Объясни простыми словами, что написано в журнале программы и есть ли там проблемы.'; L = $true }
+)) {
+    $c = New-Chip $q.T 10
+    $c.Width = [Windows.Forms.TextRenderer]::MeasureText($q.T, $fSmall).Width + (Px 28)
+    $c.Tag = $q
+    $c.Add_Click({ param($s, $e) $q = $s.Tag; Invoke-AiSafe { Send-AiMessage $q.Q -WithLog:([bool]$q.L) } })
+    $aiQuick.Controls.Add($c)
+}
+Add-AiText 'ИИ' 'Привет! Я вижу результаты проверок программы. Спросите что-нибудь или нажмите один из вопросов ниже.' $cOk
+
 # ================= БАТАРЕЯ =================
 Add-Page 'battery' 'Батарея' 'battery' 'Включите экономию один раз - дальше всё переключается само при отключении и подключении зарядки.'
 
@@ -2729,6 +3052,438 @@ Add-Section 'Обслуживание'
     Set-Status "Возвращено значений: $n. Перезагрузите ноутбук." $cOk
 })
 
+# ================= СВОЯ WINDOWS =================
+# Сборка своего установочного образа из ОФИЦИАЛЬНОГО ISO Microsoft средствами Windows (DISM):
+# без рекламы и мусора, с драйверами этого ноутбука и Laptop Toolkit. Защита и обновления не вырезаются.
+# Сама сборка идёт отдельным скриптом в своём окне (20-40 минут), чтобы программа не зависала.
+
+$ImageBuilderScript = @'
+param([string]$ConfigPath)
+$ErrorActionPreference = 'Stop'
+$ProgressPreference = 'SilentlyContinue'
+$Host.UI.RawUI.WindowTitle = 'Своя Windows - сборка образа'
+$cfg = Get-Content $ConfigPath -Raw -Encoding UTF8 | ConvertFrom-Json
+$work = $cfg.WorkDir
+$isoDir = Join-Path $work 'iso'
+$mount = Join-Path $work 'mount'
+$t0 = Get-Date
+function Step($t) { Write-Host ''; Write-Host "==== $t ====  [$([int]((Get-Date) - $t0).TotalMinutes) мин]" -ForegroundColor Cyan }
+function Ok($t) { Write-Host "  + $t" -ForegroundColor Green }
+function Info($t) { Write-Host "  $t" -ForegroundColor Gray }
+function Set-RegDword($key, $name, $val) { & reg.exe add $key /v $name /t REG_DWORD /d $val /f 2>&1 | Out-Null }
+function Hives-Unload { [gc]::Collect(); Start-Sleep 1; foreach ($h in 'LTK_SOFT', 'LTK_USER', 'LTK_SYS') { & reg.exe unload "HKLM\$h" 2>&1 | Out-Null } }
+
+New-Item -ItemType Directory -Force -Path $work | Out-Null
+Start-Transcript -Path (Join-Path $work 'build.log') -Force | Out-Null
+$isoMounted = $false; $wimMounted = $false
+try {
+    Write-Host 'СБОРКА СВОЕЙ WINDOWS ИЗ ОФИЦИАЛЬНОГО ОБРАЗА' -ForegroundColor White
+    Write-Host 'Займёт 20-40 минут. Не закрывайте это окно и не выключайте ноутбук.' -ForegroundColor Yellow
+
+    Step '1/8  Подготовка папки'
+    foreach ($d in $isoDir, $mount) {
+        if (Test-Path $d) {
+            & dism.exe /Unmount-Image /MountDir:"$mount" /Discard 2>&1 | Out-Null
+            Remove-Item $d -Recurse -Force -ErrorAction SilentlyContinue
+        }
+        New-Item -ItemType Directory -Force -Path $d | Out-Null
+    }
+    & dism.exe /Cleanup-Wim 2>&1 | Out-Null
+    Ok $work
+
+    Step '2/8  Копирую файлы установки из ISO'
+    $di = Mount-DiskImage -ImagePath $cfg.Iso -StorageType ISO -PassThru
+    $isoMounted = $true
+    $letter = ($di | Get-Volume).DriveLetter
+    $src = "$($letter):\"
+    & robocopy.exe $src $isoDir /E /R:1 /W:1 /NFL /NDL /NJH /NJS /NP /XF install.wim install.esd install.swm | Out-Null
+    if ($LASTEXITCODE -ge 8) { throw "Не удалось скопировать файлы установки (robocopy $LASTEXITCODE)." }
+    Get-ChildItem $isoDir -Recurse -File | ForEach-Object { $_.IsReadOnly = $false }
+    $srcImg = @("$($letter):\sources\install.wim", "$($letter):\sources\install.esd") | Where-Object { Test-Path $_ } | Select-Object -First 1
+    if (-not $srcImg) { throw 'В ISO нет sources\install.wim / install.esd - это не установочный образ Windows.' }
+    Ok "Файлы установки скопированы"
+
+    Step "3/8  Беру редакцию: $($cfg.EditionName)"
+    $wim = Join-Path $work 'install.wim'
+    Remove-Item $wim -Force -ErrorAction SilentlyContinue
+    Export-WindowsImage -SourceImagePath $srcImg -SourceIndex $cfg.Index -DestinationImagePath $wim -CompressionType max | Out-Null
+    Dismount-DiskImage -ImagePath $cfg.Iso | Out-Null
+    $isoMounted = $false
+    Ok 'Готово'
+
+    Step '4/8  Открываю образ (Mount-WindowsImage)'
+    Mount-WindowsImage -ImagePath $wim -Index 1 -Path $mount | Out-Null
+    $wimMounted = $true
+    Ok 'Образ открыт'
+
+    Step '5/8  Убираю предустановленный мусор'
+    if ($cfg.Debloat) {
+        $prov = @(Get-AppxProvisionedPackage -Path $mount)
+        foreach ($p in $prov) {
+            if ($cfg.Bloat -contains $p.DisplayName) {
+                try { Remove-AppxProvisionedPackage -Path $mount -PackageName $p.PackageName | Out-Null; Ok $p.DisplayName }
+                catch { Info "не удалось: $($p.DisplayName)" }
+            }
+        }
+    } else { Info 'пропущено' }
+
+    Step '6/8  Драйверы этого ноутбука'
+    if ($cfg.Drivers -and (Test-Path $cfg.Drivers)) {
+        $n = @(Add-WindowsDriver -Path $mount -Driver $cfg.Drivers -Recurse -ErrorAction Continue).Count
+        Ok "Добавлено драйверов: $n (Wi-Fi, чипсет, NVIDIA и др. встанут сами при установке)"
+    } else { Info 'пропущено (нет резервной копии драйверов)' }
+
+    Step '7/8  Настройки внутри образа'
+    & reg.exe load HKLM\LTK_SOFT "$mount\Windows\System32\config\SOFTWARE" | Out-Null
+    & reg.exe load HKLM\LTK_USER "$mount\Users\Default\NTUSER.DAT" | Out-Null
+    & reg.exe load HKLM\LTK_SYS "$mount\Windows\System32\config\SYSTEM" | Out-Null
+    try {
+        $S = 'HKLM\LTK_SOFT'; $U = 'HKLM\LTK_USER'
+        if ($cfg.Privacy) {
+            Set-RegDword "$S\Policies\Microsoft\Windows\DataCollection" AllowTelemetry 0
+            Set-RegDword "$S\Policies\Microsoft\Windows\CloudContent" DisableWindowsConsumerFeatures 1
+            Set-RegDword "$S\Policies\Microsoft\Windows\CloudContent" DisableConsumerAccountStateContent 1
+            Set-RegDword "$S\Policies\Microsoft\Dsh" AllowNewsAndInterests 0
+            Set-RegDword "$S\Policies\Microsoft\Windows\WindowsCopilot" TurnOffWindowsCopilot 1
+            Set-RegDword "$S\Policies\Microsoft\Windows\DeliveryOptimization" DODownloadMode 0
+            Set-RegDword "$S\Policies\Microsoft\Edge" StartupBoostEnabled 0
+            Set-RegDword "$S\Policies\Microsoft\Edge" BackgroundModeEnabled 0
+            $cdm = "$U\Software\Microsoft\Windows\CurrentVersion\ContentDeliveryManager"
+            foreach ($n in 'ContentDeliveryAllowed', 'OemPreInstalledAppsEnabled', 'PreInstalledAppsEnabled', 'PreInstalledAppsEverEnabled',
+                           'SilentInstalledAppsEnabled', 'SystemPaneSuggestionsEnabled', 'SoftLandingEnabled', 'SubscribedContent-338388Enabled',
+                           'SubscribedContent-338389Enabled', 'SubscribedContent-338393Enabled', 'SubscribedContent-353694Enabled',
+                           'SubscribedContent-353696Enabled', 'SubscribedContent-310093Enabled') { Set-RegDword $cdm $n 0 }
+            Set-RegDword "$U\Software\Microsoft\Windows\CurrentVersion\AdvertisingInfo" Enabled 0
+            Set-RegDword "$U\Software\Microsoft\Windows\CurrentVersion\Privacy" TailoredExperiencesWithDiagnosticDataEnabled 0
+            Set-RegDword "$U\Software\Microsoft\Windows\CurrentVersion\Search" BingSearchEnabled 0
+            Set-RegDword "$U\Software\Policies\Microsoft\Windows\Explorer" DisableSearchBoxSuggestions 1
+            Set-RegDword "$U\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced" HideFileExt 0
+            Set-RegDword "$U\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced" ShowCopilotButton 0
+            Set-RegDword "$U\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced" Start_IrisRecommendations 0
+            Set-RegDword "$U\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced" TaskbarDa 0
+            Ok 'Без рекламы, телеметрии, Copilot, виджетов и автоустановки игр'
+        }
+        if ($cfg.Games) {
+            Set-RegDword "$U\System\GameConfigStore" GameDVR_Enabled 0
+            Set-RegDword "$U\Software\Microsoft\Windows\CurrentVersion\GameDVR" AppCaptureEnabled 0
+            Set-RegDword "$U\Software\Microsoft\GameBar" AutoGameModeEnabled 1
+            Set-RegDword 'HKLM\LTK_SYS\ControlSet001\Control\GraphicsDrivers' HwSchMode 2
+            Ok 'Игровой режим, без фоновой записи, аппаратное планирование GPU'
+        }
+        if ($cfg.LocalUser) {
+            Set-RegDword "$S\Microsoft\Windows\CurrentVersion\OOBE" BypassNRO 1
+            Ok 'Можно установить без интернета и учётной записи Microsoft'
+        }
+    } finally { Hives-Unload }
+
+    if ($cfg.Toolkit -and (Test-Path $cfg.Toolkit)) {
+        $desk = Join-Path $mount 'Users\Public\Desktop'
+        New-Item -ItemType Directory -Force -Path $desk | Out-Null
+        if ($cfg.Toolkit -like '*.exe') { Copy-Item $cfg.Toolkit (Join-Path $desk 'Laptop Toolkit.exe') -Force }
+        else {
+            $tk = Join-Path $desk 'LaptopToolkit'
+            New-Item -ItemType Directory -Force -Path $tk | Out-Null
+            Copy-Item $cfg.Toolkit (Join-Path $tk 'LaptopToolkit.ps1') -Force
+            $bat = "@echo off`r`nstart `"`" powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"%~dp0LaptopToolkit.ps1`"`r`n"
+            [IO.File]::WriteAllText((Join-Path $tk 'LaptopToolkit.bat'), $bat)
+        }
+        Ok 'Laptop Toolkit будет на рабочем столе'
+    }
+
+    if ($cfg.LocalUser) {
+        # Только этап OOBE: разделы диска при установке выбираете сами - ничего не стирается автоматически.
+        $esc = [Security.SecurityElement]::Escape($cfg.UserName)
+        $lang = if ($cfg.Lang) { $cfg.Lang } else { 'ru-RU' }
+        $c = 'processorArchitecture="amd64" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS" xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State"'
+        $xml = @"
+<?xml version="1.0" encoding="utf-8"?>
+<unattend xmlns="urn:schemas-microsoft-com:unattend">
+  <settings pass="oobeSystem">
+    <component name="Microsoft-Windows-International-Core" $c>
+      <InputLocale>0409:00000409;0419:00000419</InputLocale>
+      <SystemLocale>ru-RU</SystemLocale>
+      <UILanguage>$lang</UILanguage>
+      <UserLocale>ru-RU</UserLocale>
+    </component>
+    <component name="Microsoft-Windows-Shell-Setup" $c>
+      <OOBE>
+        <HideEULAPage>true</HideEULAPage>
+        <HideOnlineAccountScreens>true</HideOnlineAccountScreens>
+        <HideLocalAccountScreen>true</HideLocalAccountScreen>
+        <ProtectYourPC>3</ProtectYourPC>
+      </OOBE>
+      <UserAccounts>
+        <LocalAccounts>
+          <LocalAccount wcm:action="add">
+            <Name>$esc</Name>
+            <DisplayName>$esc</DisplayName>
+            <Group>Administrators</Group>
+            <Password><Value></Value><PlainText>true</PlainText></Password>
+          </LocalAccount>
+        </LocalAccounts>
+      </UserAccounts>
+    </component>
+  </settings>
+</unattend>
+"@
+        [IO.File]::WriteAllText((Join-Path $isoDir 'autounattend.xml'), $xml, (New-Object Text.UTF8Encoding($false)))
+        Ok "Учётная запись «$($cfg.UserName)» без пароля (пароль можно задать потом), без экранов рекламы и входа в Microsoft"
+    }
+
+    Step '8/8  Сохраняю образ'
+    Dismount-WindowsImage -Path $mount -Save | Out-Null
+    $wimMounted = $false
+    $final = Join-Path $work 'install_final.wim'
+    Remove-Item $final -Force -ErrorAction SilentlyContinue
+    Export-WindowsImage -SourceImagePath $wim -SourceIndex 1 -DestinationImagePath $final -CompressionType max | Out-Null
+    Remove-Item $wim -Force
+    # FAT32 на флешке не держит файлы больше 4 ГБ - установщик Windows понимает разбитый образ .swm.
+    Split-WindowsImage -ImagePath $final -SplitImagePath (Join-Path $isoDir 'sources\install.swm') -FileSize 3800 | Out-Null
+    Remove-Item $final -Force
+    Ok "Готовые файлы установки: $isoDir"
+
+    $oscd = Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\Assessment and Deployment Kit\Deployment Tools\amd64\Oscdimg\oscdimg.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($oscd) {
+        $iso = Join-Path $work 'Windows_LaptopToolkit.iso'
+        & $oscd.FullName -m -o -u2 -udfver102 "-bootdata:2#p0,e,b$isoDir\boot\etfsboot.com#pEF,e,b$isoDir\efi\microsoft\boot\efisys.bin" $isoDir $iso | Out-Null
+        if (Test-Path $iso) { Ok "Создан ISO: $iso" }
+    }
+
+    if ($cfg.UsbDisk -ge 0) {
+        Step 'Запись на флешку'
+        $d = Get-Disk -Number $cfg.UsbDisk
+        if ("$($d.BusType)" -ne 'USB' -or [int64]$d.Size -ne [int64]$cfg.UsbSize) { throw 'Флешка не найдена или изменилась - запись отменена, данные на дисках не тронуты.' }
+        Info "Стираю: $($d.FriendlyName), $([math]::Round($d.Size / 1GB)) ГБ"
+        if ("$($d.PartitionStyle)" -ne 'RAW') { Clear-Disk -Number $d.Number -RemoveData -RemoveOEM -Confirm:$false }
+        Initialize-Disk -Number $d.Number -PartitionStyle MBR
+        $size = [math]::Min([int64]$d.Size - 8MB, 32GB - 8MB)   # FAT32 в Windows - до 32 ГБ
+        $p = New-Partition -DiskNumber $d.Number -Size $size -IsActive -AssignDriveLetter
+        Start-Sleep 2
+        $p = Get-Partition -DiskNumber $d.Number -PartitionNumber $p.PartitionNumber
+        Format-Volume -Partition $p -FileSystem FAT32 -NewFileSystemLabel 'WIN_LTK' -Confirm:$false | Out-Null
+        $dest = "$($p.DriveLetter):\"
+        Info "Копирую на $dest ..."
+        & robocopy.exe $isoDir $dest /E /R:1 /W:1 /NFL /NDL /NJH /NJS /NP | Out-Null
+        if ($LASTEXITCODE -ge 8) { throw "Ошибка копирования на флешку (robocopy $LASTEXITCODE)." }
+        Ok "Загрузочная флешка готова: $dest"
+    }
+
+    Write-Host ''
+    Write-Host "ГОТОВО за $([int]((Get-Date) - $t0).TotalMinutes) мин." -ForegroundColor Green
+    Write-Host 'Установка: вставьте флешку -> при включении Boot Menu (F7/F11/F12/Esc) -> флешка (UEFI)'
+    Write-Host '-> удалите разделы системного диска -> установка в незанятое место.'
+    Write-Host 'После установки драйверы уже на месте, а Laptop Toolkit - на рабочем столе.'
+} catch {
+    Write-Host ''
+    Write-Host "ОШИБКА: $($_.Exception.Message)" -ForegroundColor Red
+    Write-Host "Подробности: $(Join-Path $work 'build.log')" -ForegroundColor Red
+    Hives-Unload
+    if ($wimMounted) { Dismount-WindowsImage -Path $mount -Discard -ErrorAction SilentlyContinue | Out-Null }
+    if ($isoMounted) { Dismount-DiskImage -ImagePath $cfg.Iso -ErrorAction SilentlyContinue | Out-Null }
+} finally {
+    Stop-Transcript | Out-Null
+}
+'@
+
+$ImgWork = Join-Path $env:SystemDrive 'LTK_Windows'
+$DriversDir = Join-Path $ReportDir 'DriversBackup'
+$script:Img = @{
+    Iso = ''; Images = @(); Index = 0; Edition = ''; Lang = ''
+    Usb = $null
+    Opt = @{ privacy = $true; debloat = $true; games = $true; drivers = $true; toolkit = $true; local = $true }
+    User = $(if ($env:USERNAME -match '^[\w .-]{1,20}$') { $env:USERNAME } else { 'User' })
+}
+$ImgBloatExtra = @('Microsoft.OutlookForWindows', 'Microsoft.Windows.DevHome', 'Microsoft.BingSearch', 'Microsoft.Windows.Ai.Copilot.Provider')
+
+function Show-Choice([string]$title, [string]$intro, [string[]]$items, [int]$selected = 0) {
+    $dlg = New-Object Windows.Forms.Form
+    $dlg.Text = $title; $dlg.StartPosition = 'CenterParent'; $dlg.AutoScaleMode = 'None'
+    $dlg.Size = Sz 620 420; $dlg.MinimizeBox = $false; $dlg.MaximizeBox = $false; $dlg.ShowInTaskbar = $false
+    $dlg.BackColor = $bg; $dlg.ForeColor = $fg; $dlg.Font = $fUi
+    $dlg.Add_HandleCreated({ param($s, $e) [LTK.UI.Theme]::DarkTitle($s.Handle, $panel) })
+    $h = New-Object Windows.Forms.Label
+    $h.Dock = 'Top'; $h.Height = Px 56; $h.Padding = Pad 16 12 16 0; $h.Text = $intro; $h.ForeColor = $cDim; $h.BackColor = $panel
+    $lb = New-Object Windows.Forms.ListBox
+    $lb.Dock = 'Fill'; $lb.BackColor = $bg; $lb.ForeColor = $fg; $lb.BorderStyle = 'None'; $lb.Font = New-Font 'Segoe UI' 11
+    $lb.IntegralHeight = $false; $lb.ItemHeight = Px 30
+    foreach ($i in $items) { [void]$lb.Items.Add($i) }
+    if ($items.Count) { $lb.SelectedIndex = [math]::Min([math]::Max(0, $selected), $items.Count - 1) }
+    $wrap = New-Object Windows.Forms.Panel; $wrap.Dock = 'Fill'; $wrap.Padding = Pad 16 10 16 10; $wrap.Controls.Add($lb)
+    $bar = New-Object Windows.Forms.FlowLayoutPanel
+    $bar.Dock = 'Bottom'; $bar.Height = Px 58; $bar.FlowDirection = 'RightToLeft'; $bar.BackColor = $panel; $bar.Padding = Pad 10 12 10 0
+    $ok = New-Chip 'Выбрать' 130 -Primary; $ok.Height = Px 34; $ok.DialogResult = 'OK'
+    $cn = New-Chip 'Отмена' 110; $cn.Height = Px 34; $cn.DialogResult = 'Cancel'
+    $bar.Controls.AddRange(@($ok, $cn))
+    $dlg.Controls.AddRange(@($wrap, $h, $bar)); $dlg.AcceptButton = $ok; $dlg.CancelButton = $cn
+    $lb.Add_DoubleClick({ $dlg.DialogResult = 'OK' })
+    $res = if ($dlg.ShowDialog($form) -eq 'OK') { $lb.SelectedIndex } else { -1 }
+    $dlg.Dispose()
+    $res
+}
+
+function Select-Iso {
+    $fd = New-Object Windows.Forms.OpenFileDialog
+    $fd.Title = 'Официальный образ Windows 11 (ISO)'; $fd.Filter = 'Образ диска (*.iso)|*.iso'
+    $fd.InitialDirectory = [Environment]::GetFolderPath('UserProfile') + '\Downloads'
+    if ($fd.ShowDialog($form) -ne 'OK') { return }
+    $iso = $fd.FileName
+    Set-Status 'Читаю образ: какие редакции внутри...' $accent; [Windows.Forms.Application]::DoEvents()
+    try {
+        $di = Mount-DiskImage -ImagePath $iso -StorageType ISO -PassThru -ErrorAction Stop
+        try {
+            $letter = ($di | Get-Volume).DriveLetter
+            $wim = @("$($letter):\sources\install.wim", "$($letter):\sources\install.esd") | Where-Object { Test-Path $_ } | Select-Object -First 1
+            if (-not $wim) { Show-Info 'Это не установочный образ Windows (нет sources\install.wim/esd). Скачайте ISO с сайта Microsoft.' 'Образ Windows'; return }
+            $imgs = @(Get-WindowsImage -ImagePath $wim | Sort-Object ImageIndex | ForEach-Object { @{ Index = [int]$_.ImageIndex; Name = "$($_.ImageName)" } })
+            # редакция как сейчас - тогда Windows активируется сама по цифровой лицензии ноутбука
+            $cur = "$((Get-CimInstance Win32_OperatingSystem).Caption)" -replace '^Microsoft\s+', ''
+            $pick = $imgs | Where-Object { $_.Name -eq $cur } | Select-Object -First 1
+            if (-not $pick) {
+                $isHome = $cur -match 'Home|Домашн'
+                $pick = $imgs | Where-Object { ($_.Name -match 'Home|Домашн') -eq $isHome -and $_.Name -notmatch 'Single|одного|N$| N |Education|Образ' } | Select-Object -First 1
+            }
+            if (-not $pick) { $pick = $imgs[0] }
+            $lang = "$(@((Get-WindowsImage -ImagePath $wim -Index $pick.Index).Languages)[0])"
+            $script:Img.Iso = $iso; $script:Img.Images = $imgs; $script:Img.Index = $pick.Index; $script:Img.Edition = $pick.Name; $script:Img.Lang = $lang
+            Set-Status "Образ прочитан: $($imgs.Count) редакций, выбрана $($pick.Name)." $cOk
+        } finally { Dismount-DiskImage -ImagePath $iso -ErrorAction SilentlyContinue | Out-Null }
+    } catch { Show-Info "Не удалось прочитать образ: $($_.Exception.Message)" 'Образ Windows' }
+}
+
+function Get-UsbDisks { @(Get-Disk -ErrorAction SilentlyContinue | Where-Object { "$($_.BusType)" -eq 'USB' -and $_.Size -ge 7GB }) }
+
+function Start-ImageBuild {
+    $i = $script:Img
+    if (-not $i.Iso) { Show-Info 'Сначала выберите файл образа Windows (ISO).' 'Своя Windows'; return }
+    $free = (Get-PSDrive ($env:SystemDrive.TrimEnd(':'))).Free
+    if ($free -lt 20GB) { Show-Info "Нужно минимум 20 ГБ свободного места на диске $env:SystemDrive (сейчас $(GB $free) ГБ). Освободите место (страница «Оптимизация Windows» -> «Очистка диска»)." 'Своя Windows'; return }
+    $o = $i.Opt
+    $lines = @("Редакция: $($i.Edition)")
+    if ($o.privacy) { $lines += '- без рекламы, телеметрии, Copilot и виджетов' }
+    if ($o.debloat) { $lines += '- без предустановленного мусора' }
+    if ($o.games) { $lines += '- игровые настройки' }
+    if ($o.drivers -and (Test-Path $DriversDir)) { $lines += '- драйверы этого ноутбука' }
+    if ($o.toolkit) { $lines += '- Laptop Toolkit на рабочем столе' }
+    if ($o.local) { $lines += "- локальная учётная запись «$($i.User)»" }
+    $target = if ($i.Usb) { "!!! ВСЕ ДАННЫЕ НА ФЛЕШКЕ «$($i.Usb.Name)» ($($i.Usb.SizeText)) БУДУТ СТЁРТЫ.`n" } else { "Результат - папка $ImgWork\iso (флешка не выбрана).`n" }
+    $msg = "Собрать свою Windows?`n`n$($lines -join "`n")`n`n$target`nЗаймёт 20-40 минут в отдельном окне. Ваша текущая Windows не меняется."
+    if (-not (Ask-User $msg 'Своя Windows')) { return }
+    if ($i.Usb) {
+        $d = Get-Disk -Number $i.Usb.Number -ErrorAction SilentlyContinue
+        if (-not $d -or "$($d.BusType)" -ne 'USB' -or [int64]$d.Size -ne [int64]$i.Usb.Size) { Show-Info 'Флешка отключена или изменилась - выберите её заново.' 'Своя Windows'; $script:Img.Usb = $null; return }
+    }
+    $toolkit = if ($env:LTK_EXE -and (Test-Path $env:LTK_EXE)) { $env:LTK_EXE } else { $PSCommandPath }
+    $cfg = @{
+        Iso = $i.Iso; Index = $i.Index; EditionName = $i.Edition; Lang = $i.Lang; WorkDir = $ImgWork
+        Privacy = $o.privacy; Debloat = $o.debloat; Games = $o.games; LocalUser = $o.local; UserName = $i.User
+        Drivers = $(if ($o.drivers -and (Test-Path $DriversDir)) { $DriversDir } else { '' })
+        Toolkit = $(if ($o.toolkit) { $toolkit } else { '' })
+        Bloat = @(@($Bloat.Keys) + $ImgBloatExtra)
+        UsbDisk = $(if ($i.Usb) { $i.Usb.Number } else { -1 }); UsbSize = $(if ($i.Usb) { [int64]$i.Usb.Size } else { 0 })
+    }
+    $cfgPath = Join-Path $DataDir 'image.json'
+    $ps1 = Join-Path $DataDir 'ImageBuilder.ps1'
+    Write-Utf8 $cfgPath (ConvertTo-Json -InputObject $cfg -Depth 4)
+    Write-Utf8 $ps1 $ImageBuilderScript
+    Start-Process powershell.exe -ArgumentList "-NoProfile -ExecutionPolicy Bypass -NoExit -File `"$ps1`" -ConfigPath `"$cfgPath`""
+    Set-Status 'Сборка идёт в отдельном окне (20-40 минут).' $cOk
+}
+
+Add-Page 'image' 'Своя Windows' 'image' 'Своя Windows из официального образа Microsoft: без рекламы и мусора, с драйверами этого ноутбука и Laptop Toolkit. Защита и обновления не вырезаются - в отличие от чужих «сборок».'
+
+Add-Section 'Шаг 1. Подготовка'
+[void](Add-Row 'Резервная копия драйверов' 'Драйверы этого ноутбука встроятся в образ: Wi-Fi и всё остальное заработает сразу после установки.' 'Сохранить' -Load {
+    param($r)
+    if (Test-Path $DriversDir) {
+        $n = @(Get-ChildItem $DriversDir -Directory -ErrorAction SilentlyContinue).Count
+        Set-Row $r 1 "сохранено: $n" -Action 'Обновить'
+    } else { Set-Row $r 2 'нет копии' -Action 'Сохранить' }
+} -Click { Do-DriverBackup })
+[void](Add-Row 'Скачать официальный образ' 'Сайт Microsoft -> «Загрузка образа диска (ISO) Windows 11» -> язык «Русский» -> 64-bit. ~6 ГБ.' 'Открыть сайт' -Click {
+    Start-Process 'https://www.microsoft.com/software-download/windows11'
+})
+[void](Add-Row 'Файл образа (ISO)' '' 'Выбрать' -Load {
+    param($r)
+    if ($script:Img.Iso) { Set-Row $r 1 ([IO.Path]::GetFileName($script:Img.Iso)) "Язык: $($script:Img.Lang). Редакций в образе: $($script:Img.Images.Count)." -Action 'Другой' }
+    else { Set-Row $r 2 'не выбран' 'Укажите скачанный ISO - программа прочитает, какие редакции внутри.' -Action 'Выбрать' }
+} -Click { Select-Iso })
+[void](Add-Row 'Редакция' '' 'Изменить' -Load {
+    param($r)
+    if (-not $script:Img.Iso) { Set-Row $r 5 'сначала выберите ISO' -Action ''; return }
+    Set-Row $r 1 $script:Img.Edition 'Выбрана такая же, как сейчас: Windows активируется сама по цифровой лицензии ноутбука.' -Action 'Изменить'
+} -Click {
+    $names = @($script:Img.Images | ForEach-Object { $_.Name })
+    $cur = [array]::IndexOf($names, $script:Img.Edition)
+    $k = Show-Choice 'Редакция Windows' 'Берите ту же, что сейчас стоит на ноутбуке - тогда активация пройдёт автоматически.' $names $cur
+    if ($k -ge 0) { $script:Img.Index = $script:Img.Images[$k].Index; $script:Img.Edition = $script:Img.Images[$k].Name }
+})
+
+Add-Section 'Шаг 2. Что будет в образе'
+function Add-ImgOpt([string]$key, [string]$title, [string]$desc) {
+    $r = Add-Row $title $desc -Switch -Load {
+        param($r)
+        $on = [bool]$script:Img.Opt[$r.Tag.Key]
+        if ($r.Tag.Key -eq 'drivers' -and -not (Test-Path $DriversDir)) { Set-Row $r 2 'нет копии драйверов (шаг 1)' -On $false; return }
+        Set-Row $r $(if ($on) { 1 } else { 0 }) '' -On $on
+    } -Click { param($r) $script:Img.Opt[$r.Tag.Key] = -not $script:Img.Opt[$r.Tag.Key] }
+    $r.Tag.Key = $key
+}
+Add-ImgOpt 'privacy' 'Без рекламы и слежки' 'Телеметрия на минимуме, нет рекламы в Пуске, Copilot, виджетов, автоустановки Candy Crush и т.п.'
+Add-ImgOpt 'debloat' 'Без предустановленного мусора' "$(@($Bloat.Values) -join ', '), новый Outlook, Dev Home."
+Add-ImgOpt 'games' 'Игровые настройки' 'Игровой режим, без фоновой записи Xbox, аппаратное планирование GPU.'
+Add-ImgOpt 'drivers' 'Драйверы этого ноутбука' 'Из резервной копии (шаг 1): Wi-Fi, чипсет, NVIDIA, тачпад - всё встанет само.'
+Add-ImgOpt 'toolkit' 'Laptop Toolkit на рабочем столе' 'После установки откройте его и включите экономию батареи и 140 Вт.'
+$script:LocalRow = Add-Row 'Без учётной записи Microsoft' 'Локальный пользователь без пароля (пароль можно задать потом), без экранов рекламы при первом запуске. Разделы диска при установке выбираете сами.' -Switch -Load {
+    param($r)
+    $on = [bool]$script:Img.Opt.local
+    Set-Row $r $(if ($on) { 1 } else { 0 }) $(if ($on) { "пользователь «$($script:Img.User)»" } else { 'как обычно' }) -On $on
+} -Click {
+    param($r)
+    if ($script:Img.Opt.local) { $script:Img.Opt.local = $false; return }
+    Add-Type -AssemblyName Microsoft.VisualBasic
+    $n = [Microsoft.VisualBasic.Interaction]::InputBox('Имя пользователя (латиницей или кириллицей, без спецсимволов):', 'Своя Windows', $script:Img.User).Trim()
+    if (-not $n) { return }
+    if ($n -notmatch '^[\w .-]{1,20}$' -or $n -match '^(Administrator|Администратор|Guest|Гость)$') { Show-Info 'Недопустимое имя. До 20 букв и цифр, без спецсимволов.' 'Своя Windows'; return }
+    $script:Img.User = $n; $script:Img.Opt.local = $true
+}
+
+Add-Section 'Шаг 3. Сборка'
+[void](Add-Row 'Куда записать' '' 'Выбрать флешку' -Load {
+    param($r)
+    if ($script:Img.Usb) { Set-Row $r 2 "флешка: $($script:Img.Usb.Name), $($script:Img.Usb.SizeText)" 'ВСЕ ДАННЫЕ НА НЕЙ БУДУТ СТЁРТЫ.' -Action 'Изменить' }
+    else { Set-Row $r 0 "папка $ImgWork\iso" 'Вставьте флешку на 8+ ГБ и выберите её - получится готовая загрузочная флешка.' -Action 'Выбрать флешку' }
+} -Click {
+    $disks = Get-UsbDisks
+    $items = @("Не записывать - только папка $ImgWork\iso") + @($disks | ForEach-Object { "Флешка: $($_.FriendlyName), $([math]::Round($_.Size / 1GB)) ГБ (диск $($_.Number))" })
+    $k = Show-Choice 'Куда записать' 'Показаны только USB-флешки от 8 ГБ. Выбранная флешка будет полностью стёрта.' $items $(if ($script:Img.Usb) { 1 + [array]::IndexOf(@($disks | ForEach-Object Number), $script:Img.Usb.Number) } else { 0 })
+    if ($k -eq 0) { $script:Img.Usb = $null }
+    elseif ($k -gt 0) {
+        $d = $disks[$k - 1]
+        $script:Img.Usb = @{ Number = $d.Number; Size = [int64]$d.Size; Name = "$($d.FriendlyName)"; SizeText = "$([math]::Round($d.Size / 1GB)) ГБ" }
+    }
+})
+[void](Add-Row 'Собрать свою Windows' '20-40 минут в отдельном окне. Текущая Windows на ноутбуке не меняется.' 'Собрать' -Primary -H 88 -Load {
+    param($r)
+    if (-not $script:Img.Iso) { Set-Row $r 2 'выберите ISO (шаг 1)'; return }
+    $free = (Get-PSDrive ($env:SystemDrive.TrimEnd(':'))).Free
+    if ($free -lt 20GB) { Set-Row $r 3 "мало места: $(GB $free) ГБ из нужных 20"; return }
+    Set-Row $r 1 'всё готово к сборке'
+} -Click { Start-ImageBuild })
+[void](Add-Row 'Журнал сборки' 'Если что-то пошло не так - здесь подробности.' 'Открыть' -Click {
+    $p = Join-Path $ImgWork 'build.log'
+    if (Test-Path $p) { Start-Process notepad.exe $p } else { Show-Info 'Сборка ещё не запускалась.' 'Своя Windows' }
+})
+
+Add-Section 'Шаг 4. Установка'
+[void](Add-Row 'Ключ BitLocker' '' '' -Load {
+    param($r)
+    $on = $false
+    try { $v = Get-CimInstance -Namespace root\cimv2\Security\MicrosoftVolumeEncryption -ClassName Win32_EncryptableVolume -Filter "DriveLetter='$env:SystemDrive'" -ErrorAction Stop; $on = ($v.ProtectionStatus -eq 1) } catch { }
+    if ($on) { Set-Row $r 2 'диск зашифрован' 'ДО переустановки сохраните ключ восстановления: aka.ms/myrecoverykey или «manage-bde -protectors -get C:».' }
+    else { Set-Row $r 1 'диск не зашифрован' 'Ничего сохранять не нужно.' }
+})
+[void](Add-Row 'Как установить' 'Сохраните личные файлы -> флешка -> при включении Boot Menu (F7/F11/F12/Esc) -> флешка (UEFI) -> удалите разделы системного диска -> установка в незанятое место.' 'Подробно' -ToLog -H 84 -Click { Do-WinGuide })
+
 # ================= ДИАГНОСТИКА =================
 Add-Page 'diag' 'Диагностика' 'diag' 'Сведения о железе и системе - загружаются сами, ничего не меняют.'
 
@@ -2868,11 +3623,6 @@ foreach ($t in $Tools) {
     } -Click { param($r) Start-Tool $r.Tag.Tool }
     $r.Tag.Tool = $t
 }
-
-Add-Section 'Переустановка Windows'
-[void](Add-Row 'Как поставить чистую Windows' 'Пошаговый план и что сохранить заранее.' 'Открыть' -ToLog -Click { Do-WinGuide })
-[void](Add-Row 'Бэкап драйверов' 'Сохранить все драйверы в папку отчётов (особенно важен Wi-Fi).' 'Сохранить' -Click { Do-DriverBackup })
-[void](Add-Row 'Скачать Windows 11' 'Официальная страница Microsoft.' 'Открыть' -Click { Start-Process 'https://www.microsoft.com/software-download/windows11' })
 
 # ================= ЖУРНАЛ =================
 $script:LogNav = Add-Nav 'log' 'Журнал' 'report'
@@ -3059,7 +3809,7 @@ $form.Add_Shown({
     Out-Box "Laptop Toolkit v$Version - журнал действий. Здесь появляются подробности проверок и изменений." $accent
 })
 $form.Add_FormClosing({
-    $timer.Stop(); $loader.Stop()
+    $timer.Stop(); $loader.Stop(); $aiTimer.Stop()
     Get-Job | Stop-Job -ErrorAction SilentlyContinue
     Get-Job | Remove-Job -Force -ErrorAction SilentlyContinue
 })
